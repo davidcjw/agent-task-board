@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addTask,
+  claimNext,
   clearBoard,
   commitDrag,
   createTask,
@@ -10,6 +11,7 @@ import {
   normalizeTags,
   parseTags,
   reconcile,
+  setResult,
   tasksForColumn,
   taskCount,
   updateTask,
@@ -190,6 +192,74 @@ describe("deleteTask", () => {
 describe("clearBoard", () => {
   it("returns an empty board", () => {
     expect(taskCount(clearBoard())).toBe(0);
+  });
+});
+
+describe("claimNext", () => {
+  function queuedBoard() {
+    let state = emptyState();
+    // created oldest → newest; addTask unshifts so newest ends up on top.
+    state = addTask(state, createTask({ ...baseInput, title: "old", agent: "Claude Code" }, 100, "old"));
+    state = addTask(state, createTask({ ...baseInput, title: "mid", agent: "Cursor", tags: ["urgent"] }, 200, "mid"));
+    state = addTask(state, createTask({ ...baseInput, title: "new", agent: "Claude Code" }, 300, "new"));
+    return state;
+  }
+
+  it("claims the oldest queued task FIFO and moves it to running", () => {
+    const { state, task } = claimNext(queuedBoard(), {}, "w1", 9000);
+    expect(task?.id).toBe("old");
+    expect(task?.status).toBe("running");
+    expect(task?.claimedBy).toBe("w1");
+    expect(task?.startedAt).toBe(9000);
+    expect(state.columns.running).toEqual(["old"]);
+    expect(state.columns.queued).not.toContain("old");
+  });
+
+  it("respects an agent filter", () => {
+    const { task } = claimNext(queuedBoard(), { agent: "Cursor" }, "w1", 1);
+    expect(task?.id).toBe("mid");
+  });
+
+  it("respects a tag filter", () => {
+    const { task } = claimNext(queuedBoard(), { tag: "urgent" }, "w1", 1);
+    expect(task?.id).toBe("mid");
+  });
+
+  it("returns null task when nothing matches", () => {
+    const board = queuedBoard();
+    const { state, task } = claimNext(board, { agent: "Nobody" }, "w1", 1);
+    expect(task).toBeNull();
+    expect(state).toBe(board);
+  });
+
+  it("never hands the same task to two workers", () => {
+    let board = queuedBoard();
+    const first = claimNext(board, {}, "w1", 1);
+    board = first.state;
+    const second = claimNext(board, {}, "w2", 2);
+    expect(first.task?.id).not.toBe(second.task?.id);
+    expect(first.task?.id).toBe("old");
+    expect(second.task?.id).toBe("mid");
+  });
+});
+
+describe("setResult", () => {
+  it("writes the result and moves the task to review by default", () => {
+    let state = emptyState();
+    state = addTask(state, createTask({ ...baseInput, status: "running" }, 1, "t1"));
+    state = setResult(state, "t1", "agent output here", {}, 5000);
+    expect(state.tasks.t1.result).toBe("agent output here");
+    expect(state.tasks.t1.error).toBe(false);
+    expect(state.tasks.t1.status).toBe("review");
+    expect(state.columns.review).toContain("t1");
+  });
+
+  it("can flag an error and target a custom lane", () => {
+    let state = emptyState();
+    state = addTask(state, createTask({ ...baseInput, status: "running" }, 1, "t1"));
+    state = setResult(state, "t1", "boom", { error: true, toStatus: "done" }, 5000);
+    expect(state.tasks.t1.error).toBe(true);
+    expect(state.tasks.t1.status).toBe("done");
   });
 });
 

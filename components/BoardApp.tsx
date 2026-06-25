@@ -156,6 +156,7 @@ export function BoardApp() {
       <Header
         counts={counts}
         query={query}
+        mode={board.mode}
         onQueryChange={setQuery}
         onNew={() => setCreating("queued")}
         onExport={handleExport}

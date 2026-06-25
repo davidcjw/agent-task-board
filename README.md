@@ -25,8 +25,8 @@ A local-first kanban for delegating tasks to AI agents (Claude Code, Cursor, Cod
 - [Architecture](#architecture)
 - [Testing](#testing)
 - [Design system](#design-system)
+- [Agent orchestration](#agent-orchestration)
 - [Privacy](#privacy)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [Code of Conduct](#code-of-conduct)
 - [License](#license)
@@ -50,7 +50,8 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Move buttons** — `‹ ›` on every card for quick, touch-friendly lane changes.
 - **Live timers** — Running cards tick up in real time; Done cards show how long the work took (tabular figures, no jitter).
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
-- **Local-first** — everything is stored in `localStorage`. No account, no backend, no telemetry.
+- **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
+- **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks and routes them to the right runner, a **Telegram bot** as your control surface, and results posted back into Review. See [Agent orchestration](#agent-orchestration).
 - **Export / Import** — back up or move your board as a JSON file.
 - **Undo** — deletes and board-clears are undoable from a toast.
 - **Keyboard shortcuts** — `n` to add a task, `/` to focus search, `⌘↵` to save, `Esc` to close.
@@ -93,34 +94,42 @@ The board is split into pure, framework-free logic and a thin React layer, which
 
 ```
 lib/
-  types.ts      Domain types (Task, Status, BoardState)
-  board.ts      Pure reducer: add / update / delete / move / commitDrag / reconcile
-  columns.ts    Lane metadata (labels, hints, colours)
-  time.ts       Timer & relative-time formatting
-  storage.ts    localStorage persistence + JSON export/import
-  seed.ts       Sample board
-  useBoard.ts   useSyncExternalStore hook wrapping the store (SSR-safe)
+  types.ts        Domain types (Task, Status, BoardState)
+  board.ts        Pure reducer: add / update / delete / move / commitDrag / claimNext / setResult
+  columns.ts      Lane metadata (labels, hints, colours)
+  time.ts         Timer & relative-time formatting
+  storage.ts      localStorage persistence + JSON export/import
+  seed.ts         Sample board
+  boardEngine.ts  Engine contract + EMPTY sentinel + mode flag
+  localEngine.ts  Local-first engine (localStorage)
+  apiEngine.ts    Live engine (server-backed, polls /api/board)
+  useBoard.ts     useSyncExternalStore hook; selects the engine by mode
+  server/         store.ts (file-backed, mutex-guarded), auth.ts, parse.ts  ← server-only
 components/
-  ds/           Vendored dragonfly-ds primitives (Panel, Text, Button, Rule) + tokens
-  BoardApp.tsx  Orchestrator: state, search, modals, toasts, shortcuts
-  Board.tsx     DndContext + drag logic
-  Column.tsx    A droppable lane
-  TaskCard.tsx  The prompt-first card
-  TaskModal.tsx Create / edit form
+  ds/             Vendored dragonfly-ds primitives (Panel, Text, Button, Rule) + tokens
+  BoardApp.tsx    Orchestrator: state, search, modals, toasts, shortcuts
+  Board.tsx       DndContext + drag logic
+  TaskCard.tsx    The prompt-first card (renders the agent result)
+app/api/          Route Handlers: board, tasks, claim, tasks/[id]/result
+agent/
+  dispatcher.mjs    Claim → route by agent → run → report (to board + Telegram)
+  mcp-server.mjs    MCP stdio server exposing board tools
+  telegram-bot.mjs  Inbound: messages → queued tasks
+  lib/              api.mjs (board client), telegram.mjs
 ```
 
-`BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly.
+`BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly. The same pure reducer in `board.ts` backs both the browser (`localEngine`) and the server store, so the local and live boards behave identically.
 
 ## Testing
 
 ```bash
-npm run test       # 32 unit tests across the reducer, storage, and time utils
+npm run test       # 45 unit tests: reducer, claim/result, storage, time, server store
 npm run typecheck
 npm run lint
 npm run build
 ```
 
-The reducer (move/commitDrag timestamping, reconcile/repair), storage round-trips (save/load/export/import), and time formatting are all covered. UI flows (create, move, copy, delete+undo, search, persistence, drag-and-drop) were verified end-to-end in the browser.
+The reducer (move/commitDrag timestamping, atomic `claimNext`, `setResult`, reconcile/repair), storage round-trips, time formatting, and the server store (FIFO + concurrent-claim atomicity) are all covered. UI flows (create, move, copy, delete+undo, search, persistence, drag-and-drop) were verified in the browser, and the full agent loop (enqueue → dispatch → run → review) plus the MCP server were verified end-to-end against a live server.
 
 ## Design system
 
@@ -130,18 +139,78 @@ The interface is built on a vendored copy of **dragonfly-ds** (in `components/ds
 
 100% client-side. Your tasks and prompts live only in your browser's `localStorage` and are never sent anywhere. Use **Export** to keep a backup.
 
-## Roadmap
+## Agent orchestration
 
-The board is local-first today, which means an external agent can't read or claim tasks directly. The natural next step is **agent auto-pull** — letting real agents work the queue:
+Beyond the manual board, Agent Task Board can run a full **delegate → dispatch → run → review** loop where real agents pull work off the queue. The pieces:
 
-1. **A small server API** (Next.js Route Handlers over SQLite / Supabase / a JSON file):
-   - `GET /api/tasks?status=queued` — the next task
-   - `POST /api/tasks/:id/claim` — atomically move it to **Running** (so one task → one agent)
-   - `PATCH /api/tasks/:id` — post the result, move it to **Review**
-2. **A worker** that polls queued tasks, claims one, runs its prompt via the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) or `claude -p "<prompt>" --output-format json` in the target repo, then sends the output back to the **Review** lane.
-3. The **Review** lane is already the human approval gate before anything reaches **Done**.
+```
+  Telegram ──▶ MCP / API ──▶ [ Queue ] ──▶ Dispatcher ──▶ runner (claude / cursor / …)
+   (you)        (enqueue)                  (claim+route)      │
+      ▲                                                       ▼
+      └──────────── "picked up by X" / result ◀────── Review lane (your approval)
+```
 
-Until that lands, **Export** the board to JSON and point a script at the queued prompts as a manual bridge.
+1. **You enqueue** — talk to the **Telegram bot** (or any MCP client via the MCP server, or `POST /api/tasks`). Your message becomes a queued task.
+2. **The dispatcher claims it atomically** (one task → one agent), routes it to the right **runner** by the task's `agent` label, and notifies Telegram *"🟢 picked up → Claude Code"*.
+3. **The runner executes** the prompt (e.g. `claude -p`), and the dispatcher posts the output back to the **Review** lane and to Telegram *"✅ done"* / *"❌ failed"*.
+4. **You review** in the board (live mode shows cards move on their own and renders the agent's output on the card) and approve to **Done**.
+
+### Turn it on
+
+The web app stays local-first unless you point it at the server-backed board:
+
+```bash
+# 1. run the board in live mode (.env.local)
+echo "NEXT_PUBLIC_BOARD_MODE=api" > .env.local
+npm run dev                       # serves the UI + the /api routes
+
+# 2. dispatch agents (dry-run by default — reports the command, runs nothing)
+npm run dispatcher                # add --execute to actually run runners
+                                  # add --once to drain the queue and exit
+
+# 3. (optional) Telegram control surface
+TELEGRAM_BOT_TOKEN=… npm run telegram
+
+# 4. (optional) MCP server, so you can enqueue by chatting with an agent
+npm run mcp
+```
+
+Copy [`.env.example`](.env.example) to `.env` and fill in what you need.
+
+### The API
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /api/board` | Full board (the live UI polls this) |
+| `POST /api/tasks` | Create a task |
+| `PATCH /api/tasks/:id` | Update / move a task |
+| `DELETE /api/tasks/:id` | Delete a task |
+| `POST /api/claim` | **Atomically** claim the oldest queued task → Running |
+| `POST /api/tasks/:id/result` | Post an agent's result → Review |
+
+`/api/claim` and `/api/tasks/:id/result` honour an optional `AGENT_TOKEN` (`Authorization: Bearer …`).
+
+### Routing
+
+The dispatcher routes each claimed task to a runner by its `agent` label using [`agent/routes.json`](agent/routes.example.json) (falls back to `routes.example.json`):
+
+```json
+{
+  "default":     { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "." },
+  "Claude Code": { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "." }
+}
+```
+
+Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text).
+
+> ⚠️ **Safety:** the dispatcher is **dry-run by default** — it reports the command it *would* run and touches nothing. Pass `--execute` (or `AGENT_EXECUTE=1`) only when you're ready for agents to run commands and edit repos on your machine. Results always land in **Review** for your approval, never straight to Done.
+
+### MCP & Telegram
+
+- **MCP server** (`agent/mcp-server.mjs`) exposes `add_task`, `list_tasks`, `get_board`, `claim_next`, `report_result`, `move_task`. Point Claude Desktop / Claude Code at it (`npm run mcp`) and queue work by talking to an agent. Config example is in the file header.
+- **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
+
+> The server-backed board persists to a JSON file (`.data/board.json`) and the agent layer needs a long-running process, so **live mode is for local / self-hosted use** — the public demo deployment stays local-first.
 
 ## Contributing
 

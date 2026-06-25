@@ -219,6 +219,33 @@ export function TaskCardBody({
           </div>
         )}
 
+        {/* agent result — written back by the worker/dispatcher */}
+        {task.result ? (
+          <div
+            className={cn(
+              "mt-2 rounded-[3px] border px-2 py-1.5",
+              task.error ? "border-accent/40 bg-accent/[0.06]" : "border-running/30 bg-running/[0.06]",
+            )}
+          >
+            <div className="mb-1 flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "font-mono text-[9px] uppercase tracking-wider",
+                  task.error ? "text-accent" : "text-running",
+                )}
+              >
+                {task.error ? "error" : "result"}
+              </span>
+              {task.claimedBy && (
+                <span className="font-mono text-[9px] text-muted">· {task.claimedBy}</span>
+              )}
+            </div>
+            <p className="line-clamp-4 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted">
+              {task.result}
+            </p>
+          </div>
+        ) : null}
+
         {/* footer */}
         <div className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-2">
           <Footer task={task} now={now} />

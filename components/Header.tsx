@@ -9,6 +9,7 @@ import { DownloadIcon, PlusIcon, SearchIcon, TrashIcon, UploadIcon, XIcon } from
 export interface HeaderProps {
   counts: Record<Status, number> & { total: number };
   query: string;
+  mode: "local" | "live";
   onQueryChange: (q: string) => void;
   onNew: () => void;
   onExport: () => void;
@@ -34,6 +35,7 @@ function Stat({ label, value, hex, live }: { label: string; value: number; hex?:
 export function Header({
   counts,
   query,
+  mode,
   onQueryChange,
   onNew,
   onExport,
@@ -41,6 +43,7 @@ export function Header({
   onClear,
 }: HeaderProps) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const live = mode === "live";
 
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-canvas/85 backdrop-blur-md">
@@ -56,6 +59,16 @@ export function Header({
               <span className="text-accent">{"//"}</span>
               <span className="text-ink">Taskboard</span>
             </h1>
+            <span
+              title={live ? "Server-backed — agents can act on this board" : "Local-first — stored in this browser"}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-[3px] border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider",
+                live ? "border-running/40 text-running" : "border-line text-muted",
+              )}
+            >
+              <span className={cn("h-1.5 w-1.5 rounded-full", live ? "bg-running live-dot" : "bg-muted")} />
+              {live ? "Live" : "Local"}
+            </span>
           </div>
           <span className="hidden h-5 w-px bg-line sm:block" />
           <div className="hidden items-center gap-4 sm:flex">

@@ -195,6 +195,69 @@ export function clearBoard(): BoardState {
   return emptyState();
 }
 
+// ---------------------------------------------------------------------------
+// Agent / worker operations — used by the server store so real agents can
+// claim queued work and report results back.
+// ---------------------------------------------------------------------------
+
+export interface ClaimFilter {
+  /** Only claim tasks whose agent label matches (case-insensitive). */
+  agent?: string;
+  /** Only claim tasks carrying this tag (case-insensitive). */
+  tag?: string;
+}
+
+/**
+ * Atomically claim the oldest queued task matching the filter: move it to
+ * "running" and stamp who took it. Returns the new state and the claimed task,
+ * or `{ task: null }` when nothing matches.
+ */
+export function claimNext(
+  state: BoardState,
+  filter: ClaimFilter = {},
+  worker = "worker",
+  now = Date.now(),
+): { state: BoardState; task: Task | null } {
+  const wantAgent = filter.agent?.trim().toLowerCase();
+  const wantTag = filter.tag?.trim().toLowerCase();
+
+  const candidates = state.columns.queued
+    .map((id) => state.tasks[id])
+    .filter((t): t is Task => Boolean(t))
+    .filter((t) => !wantAgent || t.agent.toLowerCase() === wantAgent)
+    .filter((t) => !wantTag || t.tags.some((tag) => tag.toLowerCase() === wantTag));
+
+  if (candidates.length === 0) return { state, task: null };
+
+  // FIFO: oldest created wins.
+  const target = candidates.reduce((oldest, t) => (t.createdAt < oldest.createdAt ? t : oldest));
+
+  let next = moveTask(state, target.id, "running", 0, now);
+  const claimed: Task = { ...next.tasks[target.id], claimedBy: worker };
+  next = { ...next, tasks: { ...next.tasks, [target.id]: claimed } };
+  return { state: next, task: claimed };
+}
+
+/**
+ * Record an agent's result on a task and advance it (default → "review", the
+ * human approval gate). Pass `error` to flag a failed run.
+ */
+export function setResult(
+  state: BoardState,
+  id: string,
+  result: string,
+  options: { toStatus?: Status; error?: boolean } = {},
+  now = Date.now(),
+): BoardState {
+  const task = state.tasks[id];
+  if (!task) return state;
+  const toStatus = options.toStatus ?? "review";
+  const withResult: Task = { ...task, result, error: options.error ?? false, updatedAt: now };
+  let next: BoardState = { ...state, tasks: { ...state.tasks, [id]: withResult } };
+  if (toStatus !== task.status) next = moveTask(next, id, toStatus, 0, now);
+  return next;
+}
+
 /** Read the ordered task objects for a single column. */
 export function tasksForColumn(state: BoardState, status: Status): Task[] {
   return state.columns[status]

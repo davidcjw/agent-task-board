@@ -1,0 +1,17 @@
+{
+  "default": {
+    "command": "claude",
+    "args": ["-p", "{prompt}", "--output-format", "json", "--permission-mode", "acceptEdits"],
+    "cwd": "."
+  },
+  "Claude Code": {
+    "command": "claude",
+    "args": ["-p", "{prompt}", "--output-format", "json", "--permission-mode", "acceptEdits"],
+    "cwd": "."
+  },
+  "Cursor": {
+    "command": "echo",
+    "args": ["Wire up a Cursor agent runner here. Task: {title}"],
+    "cwd": "."
+  }
+}

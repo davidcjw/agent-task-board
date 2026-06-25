@@ -20,6 +20,12 @@ export interface Task {
   startedAt?: number;
   /** Set when the task enters "done"; cleared if it leaves "done". */
   completedAt?: number;
+  /** Worker/agent id that claimed the task (set by the claim endpoint). */
+  claimedBy?: string;
+  /** The agent's output, written back when the task moves to review/done. */
+  result?: string;
+  /** True if the agent run failed; pairs with a result describing the error. */
+  error?: boolean;
 }
 
 /**

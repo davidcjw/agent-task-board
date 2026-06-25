@@ -1,26 +1,140 @@
 @import "tailwindcss";
 
+/*
+ * Theme tokens — bridge dragonfly-ds (vendored in components/ds/dragonfly.css)
+ * into Tailwind v4 utilities. Status hues are sparing semantic additions on top
+ * of the DS's black-canvas / orange-accent base, one per board lane.
+ */
+@theme {
+  --color-canvas: #000000;
+  --color-surface: #0a0a0c;
+  --color-ink: #f2f2f2;
+  --color-muted: #7d7d7d;
+  --color-line: rgba(242, 242, 242, 0.1);
+  --color-line-strong: rgba(242, 242, 242, 0.24);
+  --color-fill: rgba(242, 242, 242, 0.06);
+  --color-accent: #fa4c14;
+
+  --color-queued: #8a8fa3;
+  --color-running: #34d399;
+  --color-review: #fbbf24;
+  --color-done: #56a3d9;
+
+  --font-sans: var(--font-df-sans), system-ui, sans-serif;
+  --font-mono: var(--font-df-mono), ui-monospace, monospace;
+  --font-serif: var(--font-df-serif), Georgia, serif;
+
+  --radius-df: 4px;
+}
+
+/* Point the vendored DS font tokens at the self-hosted next/font families. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --df-font-serif: var(--font-df-serif), Georgia, serif;
+  --df-font-sans: var(--font-df-sans), system-ui, sans-serif;
+  --df-font-mono: var(--font-df-mono), ui-monospace, monospace;
+  color-scheme: dark;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--df-font-sans);
+  font-weight: 300;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Faint HUD grid + top vignette — the mission-control atmosphere. */
+  background-image:
+    radial-gradient(120% 80% at 50% -10%, rgba(250, 76, 20, 0.06), transparent 60%),
+    linear-gradient(to right, rgba(242, 242, 242, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(242, 242, 242, 0.035) 1px, transparent 1px);
+  background-size: 100% 100%, 48px 48px, 48px 48px;
+  background-attachment: fixed;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: #000;
+}
+
+/* Dark, thin scrollbars to match the console. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(242, 242, 242, 0.18) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(242, 242, 242, 0.16);
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(242, 242, 242, 0.28);
+}
+
+/* Tabular figures for timers and counts so digits never jitter. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+@keyframes df-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+.live-dot {
+  animation: df-pulse 1.8s var(--df-ease, ease-in-out) infinite;
+}
+
+@keyframes df-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: df-rise 0.32s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes df-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fade {
+  animation: df-fade 0.18s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  body {
+    background-attachment: scroll;
+  }
 }

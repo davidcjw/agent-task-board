@@ -1,0 +1,98 @@
+/*
+ * Vendored from dragonfly-ds (~/code/design-systems/dragonfly-ds, v0.1.0).
+ * Dark editorial design system: black canvas, 10% white hairline grid, single
+ * orange-red accent, three-face type system. The Google Fonts @import has been
+ * removed — fonts are self-hosted via next/font and mapped onto the --df-font-*
+ * tokens in globals.css. Do not hand-edit; re-vendor from source if it changes.
+ */
+:root {
+  --df-canvas: #000000;
+  --df-ink: #f2f2f2;
+  --df-muted: #7d7d7d;
+  --df-line: rgba(242, 242, 242, 0.1);
+  --df-line-strong: rgba(242, 242, 242, 0.24);
+  --df-fill: rgba(242, 242, 242, 0.06);
+  --df-accent: #fa4c14;
+  --df-magenta: #ec39b6;
+  --df-blue: #5014fa;
+  --df-font-serif: "FK Roman Standard", "Fraunces", Georgia, serif;
+  --df-font-sans: "NON Natural Grotesk", "Inter", system-ui, sans-serif;
+  --df-font-mono: "NON Natural Mono", "JetBrains Mono", ui-monospace, monospace;
+  --df-fs-mega: clamp(80px, 13vw, 164px);
+  --df-fs-display: 91px;
+  --df-fs-h: 42px;
+  --df-fs-lead: 25px;
+  --df-fs-body: 16px;
+  --df-fs-micro: 10px;
+  --df-weight-light: 300;
+  --df-weight-regular: 400;
+  --df-track-mega: -0.04em;
+  --df-track-display: -0.018em;
+  --df-track-mono: 0.04em;
+  --df-leading: 1.4;
+  --df-leading-tight: 1;
+  --df-module: 12px;
+  --df-gutter: 24px;
+  --df-border-width: 1px;
+  --df-border: var(--df-border-width) solid var(--df-line);
+  --df-radius: 4px;
+  --df-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --df-dur: 0.18s;
+}
+.df-surface-page {
+  background-color: var(--df-canvas);
+  color: var(--df-ink);
+  font-family: var(--df-font-sans);
+  font-weight: var(--df-weight-regular);
+  font-size: var(--df-fs-body);
+}
+.df-panel {
+  --df-panel-pad: 0px;
+  box-sizing: border-box;
+  display: block;
+  padding: var(--df-panel-pad);
+  background-color: transparent;
+  color: var(--df-ink);
+  font-family: var(--df-font-sans);
+  border-radius: var(--df-radius);
+  border-color: var(--df-line);
+  border-style: solid;
+  border-width: 0;
+  transition: border-color var(--df-dur) var(--df-ease), background-color var(--df-dur) var(--df-ease);
+}
+.df-panel--border-all { border-width: var(--df-border-width); }
+.df-panel--border-none { border-width: 0; }
+.df-panel--border-top { border-top-width: var(--df-border-width); }
+.df-panel--border-bottom { border-bottom-width: var(--df-border-width); }
+.df-panel--border-x { border-left-width: var(--df-border-width); border-right-width: var(--df-border-width); }
+.df-panel--border-y { border-top-width: var(--df-border-width); border-bottom-width: var(--df-border-width); }
+.df-panel--filled { background-color: var(--df-fill); }
+.df-panel:is(button) { -webkit-appearance: none; -moz-appearance: none; appearance: none; font: inherit; text-align: inherit; cursor: pointer; }
+.df-panel:is(a) { text-decoration: none; color: inherit; }
+.df-panel--interactive { cursor: pointer; }
+.df-panel--interactive:hover { border-color: var(--df-accent); }
+.df-panel:focus-visible { outline: 1px solid var(--df-accent); outline-offset: 2px; }
+.df-text { margin: 0; line-height: var(--df-leading); color: var(--df-ink); }
+.df-text--serif { font-family: var(--df-font-serif); font-weight: var(--df-weight-regular); }
+.df-text--sans { font-family: var(--df-font-sans); font-weight: var(--df-weight-light); }
+.df-text--mono { font-family: var(--df-font-mono); font-weight: var(--df-weight-regular); letter-spacing: var(--df-track-mono); }
+.df-text--mega { font-size: var(--df-fs-mega); line-height: var(--df-leading-tight); letter-spacing: var(--df-track-mega); }
+.df-text--display { font-size: var(--df-fs-display); line-height: var(--df-leading-tight); letter-spacing: var(--df-track-display); }
+.df-text--h { font-size: var(--df-fs-h); line-height: 1.1; letter-spacing: var(--df-track-display); }
+.df-text--lead { font-size: var(--df-fs-lead); line-height: 1.3; }
+.df-text--body { font-size: var(--df-fs-body); }
+.df-text--micro { font-size: var(--df-fs-micro); line-height: var(--df-leading-tight); }
+.df-text--ink { color: var(--df-ink); }
+.df-text--muted { color: var(--df-muted); }
+.df-text--accent { color: var(--df-accent); }
+.df-text--inherit { color: inherit; }
+.df-text--caps { text-transform: uppercase; }
+.df-rule { display: block; border: 0; }
+.df-rule--h { width: 100%; border-top: var(--df-border-width) solid var(--df-line); }
+.df-rule--v { align-self: stretch; min-height: 1em; border-left: var(--df-border-width) solid var(--df-line); }
+.df-rule--strong.df-rule--h { border-top-color: var(--df-line-strong); }
+.df-rule--strong.df-rule--v { border-left-color: var(--df-line-strong); }
+.df-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 18px; border-radius: var(--df-radius); white-space: nowrap; line-height: 1; }
+.df-button.df-button--accent { background-color: var(--df-accent); border-color: var(--df-accent); color: var(--df-canvas); }
+.df-button.df-button--accent:hover { border-color: var(--df-accent); opacity: 0.9; }
+.df-button.df-button--ghost:hover { color: var(--df-accent); }

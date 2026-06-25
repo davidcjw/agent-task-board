@@ -87,6 +87,7 @@ The board seeds itself with a sample set of tasks on first visit. Clear it (tras
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run test` | Run the Vitest suite |
 | `npm run test:watch` | Vitest in watch mode |
+| `npm run agents` | Bring up the whole control plane: board + dispatcher + Telegram bot ([details](#agent-orchestration)) |
 
 ## Architecture
 
@@ -112,9 +113,11 @@ components/
   TaskCard.tsx    The prompt-first card (renders the agent result)
 app/api/          Route Handlers: board, tasks, claim, tasks/[id]/result
 agent/
+  launch.mjs        One command: board + dispatcher + bot (`npm run agents`)
   dispatcher.mjs    Claim → route by agent → run → report (to board + Telegram)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
+  launchd/          macOS LaunchAgent installer (run the dispatcher persistently)
   lib/              api.mjs (board client), telegram.mjs
 ```
 
@@ -157,7 +160,26 @@ Beyond the manual board, Agent Task Board can run a full **delegate → dispatch
 
 ### Turn it on
 
-The web app stays local-first unless you point it at the server-backed board:
+**One command** — bring up the board (in `api` mode) and the dispatcher, with labelled output and a clean Ctrl-C that stops everything:
+
+```bash
+npm run agents                    # board + dispatcher (dry-run); no built-in bot
+npm run agents -- --execute       # let the dispatcher actually run runners
+npm run agents -- --telegram      # also run the built-in inbound bot (needs a token)
+npm run agents -- --prod          # serve a production build (run `npm run build` first)
+npm run agents -- --no-board      # attach to an already-running board (BOARD_URL)
+```
+
+> The built-in inbound bot is **off by default** — use an external front door (e.g. [hans / telegram-claude-agent](#wiring-it-to-an-existing-telegram-agent)) and the dispatcher still posts results to your chat. Only pass `--telegram` if you want the bundled bot instead — and never run both pollers on one token (Telegram `409 Conflict`).
+
+**Run persistently (macOS)** — keep the dispatcher alive across logins and crashes with a LaunchAgent. It runs only the dispatcher, so keep a board up (`npm run agents`) for it to claim work; logs land in `.data/dispatcher.{out,err}.log`:
+
+```bash
+npm run agents:install            # dry-run; add `-- --execute` to run runners
+npm run agents:uninstall
+```
+
+**Or run the pieces by hand:**
 
 ```bash
 # 1. run the board in live mode (.env.local)

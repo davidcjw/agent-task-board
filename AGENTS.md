@@ -21,6 +21,8 @@ npm run test        # Vitest unit suite — must be green
 npm run dispatcher  # agent dispatcher (dry-run unless --execute)
 npm run telegram    # inbound Telegram bot (needs TELEGRAM_BOT_TOKEN)
 npm run mcp         # MCP stdio server exposing board tools
+npm run agents      # control plane: board (api mode) + dispatcher + bot; one Ctrl-C stops all
+npm run agents:install / agents:uninstall   # macOS LaunchAgent: run the dispatcher persistently
 ```
 
 Always run `lint`, `typecheck`, `test`, and `build` before considering a change done.
@@ -32,6 +34,8 @@ Always run `lint`, `typecheck`, `test`, and `build` before considering a change 
 - **`BoardState`** = a flat `tasks` map + ordered id-lists per column (`columns: Record<Status, string[]>`). Reorders/moves are array splices; drag uses dnd-kit `arrayMove`.
 - **Server** is in `lib/server/` (server-only — never import from client components): `store.ts` is a JSON-file board with an in-process async **mutex** so claims are atomic (one task → one agent). Route Handlers in `app/api/` (board, tasks, claim, result) wrap it.
 - **Agent layer** in `agent/` (plain Node ESM, run via npm scripts): `dispatcher.mjs` (claim → route by `agent` label via `routes.json` → run → report to board + Telegram), `mcp-server.mjs` (board tools over stdio), `telegram-bot.mjs` (messages → tasks), `lib/api.mjs` + `lib/telegram.mjs`. **The dispatcher is dry-run by default**; `--execute` / `AGENT_EXECUTE=1` actually runs runner commands. Results always go to **Review** (human gate), never straight to Done.
+  - `launch.mjs` (`npm run agents`) is the **process manager** that ties the layer together: it spawns the board in `api` mode, polls `/api/board` until ready, then starts the dispatcher (and the inbound bot only if `--telegram` is passed), prefixing each child's output and tearing them all down on Ctrl-C or if any one exits. The built-in bot is **off by default** — the assumed inbound front door is an external bot (e.g. hans) that enqueues via the board MCP, while the dispatcher still posts results over `TELEGRAM_BOT_TOKEN` (sending doesn't collide with an external poller; two `getUpdates` pollers on one token do → `409 Conflict`). Flags: `--execute`, `--telegram`, `--prod`, `--no-board`.
+  - `launchd/install.mjs` (`npm run agents:install`) writes + loads a macOS LaunchAgent (`KeepAlive`/`RunAtLoad`) that runs only the dispatcher persistently; it widens `PATH` so the runner can find `claude`. Needs a board reachable at `BOARD_URL`.
 - **UI** is in `components/`. Orchestrator `BoardApp.tsx`; drag-and-drop in `Board.tsx`; prompt-first card `TaskCard.tsx` (also renders the agent result block).
 
 ## Design system

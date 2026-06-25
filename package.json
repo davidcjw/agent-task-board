@@ -12,7 +12,10 @@
     "test:watch": "vitest",
     "dispatcher": "node --env-file-if-exists=.env agent/dispatcher.mjs",
     "telegram": "node --env-file-if-exists=.env agent/telegram-bot.mjs",
-    "mcp": "node --env-file-if-exists=.env agent/mcp-server.mjs"
+    "mcp": "node --env-file-if-exists=.env agent/mcp-server.mjs",
+    "agents": "node --env-file-if-exists=.env agent/launch.mjs",
+    "agents:install": "node --env-file-if-exists=.env agent/launchd/install.mjs",
+    "agents:uninstall": "node agent/launchd/install.mjs --uninstall"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

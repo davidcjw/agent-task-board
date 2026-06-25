@@ -210,6 +210,24 @@ Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per 
 - **MCP server** (`agent/mcp-server.mjs`) exposes `add_task`, `list_tasks`, `get_board`, `claim_next`, `report_result`, `move_task`. Point Claude Desktop / Claude Code at it (`npm run mcp`) and queue work by talking to an agent. Config example is in the file header.
 - **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
 
+### Wiring it to an existing Telegram agent
+
+Already run a Telegram → `claude -p` bot (e.g. [telegram-claude-agent](https://github.com/davidcjw/telegram-claude-agent))? Use it as the **front door** and let this board's dispatcher do the work — no edits to the bot needed if it runs `claude --dangerously-skip-permissions --print`:
+
+1. **Register the MCP server for your bot's claude** (once) so it can enqueue:
+   ```bash
+   claude mcp add -s user agent-task-board -e BOARD_URL=http://localhost:3000 \
+     -- node /abs/path/agent-task-board/agent/mcp-server.mjs
+   ```
+   Any `claude` session now has `add_task` (and the bot auto-allows it under `--dangerously-skip-permissions`).
+2. **Send dispatcher notifications to that bot's chat** — in `.env`, set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` to the same bot + chat, so "picked up" / results show up in your existing conversation.
+3. **Run** the board + dispatcher:
+   ```bash
+   npm run dev                       # board API + queue
+   npm run dispatcher -- --execute   # claims → runs claude -p → reports to Telegram
+   ```
+4. Tell your bot *"queue a task for Claude Code to …"* → its claude calls `add_task` → the dispatcher runs it and reports back. (Optionally add a line to the bot's persona telling it to use `add_task` when you say "queue / dispatch".)
+
 > The server-backed board persists to a JSON file (`.data/board.json`) and the agent layer needs a long-running process, so **live mode is for local / self-hosted use** — the public demo deployment stays local-first.
 
 ## Contributing

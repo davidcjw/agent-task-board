@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dispatcher": "node agent/dispatcher.mjs",
-    "telegram": "node agent/telegram-bot.mjs",
-    "mcp": "node agent/mcp-server.mjs"
+    "dispatcher": "node --env-file-if-exists=.env agent/dispatcher.mjs",
+    "telegram": "node --env-file-if-exists=.env agent/telegram-bot.mjs",
+    "mcp": "node --env-file-if-exists=.env agent/mcp-server.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -13,5 +13,16 @@
     "command": "echo",
     "args": ["Wire up a Cursor agent runner here. Task: {title}"],
     "cwd": "."
+  },
+  "commit-push": {
+    "command": "claude",
+    "args": [
+      "-p",
+      "On a new git branch named atb/{id}, implement the task below, commit, push the branch, and open a PR with `gh pr create --fill`. End your reply with exactly one line: BOARD_PR: <the pull request url>. Task: {prompt}",
+      "--output-format",
+      "json",
+      "--dangerously-skip-permissions"
+    ],
+    "cwd": "."
   }
 }

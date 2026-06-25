@@ -16,6 +16,7 @@
 //   npm run agents -- --telegram    # also run the built-in inbound bot (needs a token)
 //   npm run agents -- --prod        # serve a production build (run `npm run build` first)
 //   npm run agents -- --no-board    # attach to an already-running board (BOARD_URL)
+//   npm run agents -- --no-watcher  # don't run the merge-watcher (Review→Done on PR merge)
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -28,13 +29,14 @@ const EXECUTE = has("--execute") || process.env.AGENT_EXECUTE === "1";
 const PROD = has("--prod");
 const WITH_TELEGRAM = has("--telegram"); // built-in inbound bot is opt-in
 const NO_BOARD = has("--no-board");
+const NO_WATCHER = has("--no-watcher");
 const HAS_TELEGRAM = WITH_TELEGRAM && Boolean(process.env.TELEGRAM_BOT_TOKEN);
 
 const BOARD_URL = (process.env.BOARD_URL || "http://localhost:3000").replace(/\/$/, "");
 const READY_URL = `${BOARD_URL}/api/board`;
 
 // --- pretty, labelled output ----------------------------------------------
-const COLORS = { board: 36, dispatch: 33, telegram: 35, sys: 32 };
+const COLORS = { board: 36, dispatch: 33, watcher: 34, telegram: 35, sys: 32 };
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code, s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
 const tag = (name) => paint(COLORS[name] || 37, name.padEnd(8));
@@ -137,6 +139,8 @@ async function main() {
   const dispatcherArgs = ["agent/dispatcher.mjs"];
   if (EXECUTE) dispatcherArgs.push("--execute");
   start("dispatch", process.execPath, dispatcherArgs);
+
+  if (!NO_WATCHER) start("watcher", process.execPath, ["agent/merge-watcher.mjs"]);
 
   if (WITH_TELEGRAM && !process.env.TELEGRAM_BOT_TOKEN) {
     sys("--telegram given but no TELEGRAM_BOT_TOKEN — skipping the built-in bot.");

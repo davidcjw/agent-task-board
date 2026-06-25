@@ -113,12 +113,13 @@ components/
   TaskCard.tsx    The prompt-first card (renders the agent result)
 app/api/          Route Handlers: board, tasks, claim, tasks/[id]/result
 agent/
-  launch.mjs        One command: board + dispatcher + bot (`npm run agents`)
+  launch.mjs        One command: board + dispatcher + watcher (`npm run agents`)
   dispatcher.mjs    Claim → route by agent → run → report (to board + Telegram)
+  merge-watcher.mjs Move Review → Done when a card's PR is merged (polls `gh`)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
   launchd/          macOS LaunchAgent installer (run the dispatcher persistently)
-  lib/              api.mjs (board client), telegram.mjs
+  lib/              api.mjs (board client), telegram.mjs, prs.mjs (PR helpers)
 ```
 
 `BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly. The same pure reducer in `board.ts` backs both the browser (`localEngine`) and the server store, so the local and live boards behave identically.
@@ -156,18 +157,20 @@ Beyond the manual board, Agent Task Board can run a full **delegate → dispatch
 1. **You enqueue** — talk to the **Telegram bot** (or any MCP client via the MCP server, or `POST /api/tasks`). Your message becomes a queued task.
 2. **The dispatcher claims it atomically** (one task → one agent), routes it to the right **runner** by the task's `agent` label, and notifies Telegram *"🟢 picked up → Claude Code"*.
 3. **The runner executes** the prompt (e.g. `claude -p`), and the dispatcher posts the output back to the **Review** lane and to Telegram *"✅ done"* / *"❌ failed"*.
-4. **You review** in the board (live mode shows cards move on their own and renders the agent's output on the card) and approve to **Done**.
+4. **You review** in the board (live mode shows cards move on their own and renders the agent's output on the card) and approve to **Done** — drag the card, or `PATCH /api/tasks/:id {"status":"done"}` / the MCP `move_task`.
+5. **Or let it auto-complete.** For tasks that open a pull request (label them `commit-push`, or have the runner print a `github.com/.../pull/N` url), the **merge-watcher** polls `gh` and moves the card to **Done** by itself the moment the PR is merged — so "merge to master" *is* the approval.
 
 ### Turn it on
 
 **One command** — bring up the board (in `api` mode) and the dispatcher, with labelled output and a clean Ctrl-C that stops everything:
 
 ```bash
-npm run agents                    # board + dispatcher (dry-run); no built-in bot
+npm run agents                    # board + dispatcher (dry-run) + merge-watcher; no built-in bot
 npm run agents -- --execute       # let the dispatcher actually run runners
 npm run agents -- --telegram      # also run the built-in inbound bot (needs a token)
 npm run agents -- --prod          # serve a production build (run `npm run build` first)
 npm run agents -- --no-board      # attach to an already-running board (BOARD_URL)
+npm run agents -- --no-watcher    # don't run the merge-watcher
 ```
 
 > The built-in inbound bot is **off by default** — use an external front door (e.g. [hans / telegram-claude-agent](#wiring-it-to-an-existing-telegram-agent)) and the dispatcher still posts results to your chat. Only pass `--telegram` if you want the bundled bot instead — and never run both pollers on one token (Telegram `409 Conflict`).
@@ -190,10 +193,13 @@ npm run dev                       # serves the UI + the /api routes
 npm run dispatcher                # add --execute to actually run runners
                                   # add --once to drain the queue and exit
 
-# 3. (optional) Telegram control surface
+# 3. (optional) merge-watcher: move Review → Done when a task's PR is merged
+npm run watcher                   # polls `gh` every WATCHER_INTERVAL ms (default 30s)
+
+# 4. (optional) Telegram control surface
 TELEGRAM_BOT_TOKEN=… npm run telegram
 
-# 4. (optional) MCP server, so you can enqueue by chatting with an agent
+# 5. (optional) MCP server, so you can enqueue by chatting with an agent
 npm run mcp
 ```
 
@@ -226,6 +232,17 @@ The dispatcher routes each claimed task to a runner by its `agent` label using [
 Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text).
 
 > ⚠️ **Safety:** the dispatcher is **dry-run by default** — it reports the command it *would* run and touches nothing. Pass `--execute` (or `AGENT_EXECUTE=1`) only when you're ready for agents to run commands and edit repos on your machine. Results always land in **Review** for your approval, never straight to Done.
+
+### Auto-Done on merge (the `commit-push` flow)
+
+The bundled **`commit-push`** route tells the runner to work on a branch, push, and open a PR (`gh pr create --fill`), ending its output with `BOARD_PR: <url>`. So a single Telegram message can turn into a pull request:
+
+> *"[commit-push] add a /health endpoint that returns 200 OK"* → branch `atb/<id>` → PR opened → card sits in **Review** with the PR link.
+
+The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) then polls every PR found on a Review card via `gh`, and moves the card to **Done** the moment that PR is merged — and pings Telegram *"🎉 merged → Done"*. So **merging the PR to master is the approval**; you never touch the board. Detection is detached from how the card was created — any Review card whose result contains a `github.com/.../pull/N` url is watched.
+
+- Set the poll interval in `.env` via **`WATCHER_INTERVAL`** (ms, default `30000`), or `npm run watcher -- --interval 60000`.
+- Point `commit-push`'s `cwd` at the repo you actually want changed (the example uses `.`), and make sure `gh` is authenticated there.
 
 ### MCP & Telegram
 

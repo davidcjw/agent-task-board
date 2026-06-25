@@ -19,9 +19,10 @@ npm run lint        # ESLint — strict; must be clean
 npm run typecheck   # tsc --noEmit — must be clean
 npm run test        # Vitest unit suite — must be green
 npm run dispatcher  # agent dispatcher (dry-run unless --execute)
+npm run watcher     # merge-watcher: Review → Done when a card's PR is merged (polls gh)
 npm run telegram    # inbound Telegram bot (needs TELEGRAM_BOT_TOKEN)
 npm run mcp         # MCP stdio server exposing board tools
-npm run agents      # control plane: board (api mode) + dispatcher + bot; one Ctrl-C stops all
+npm run agents      # control plane: board (api mode) + dispatcher + merge-watcher; one Ctrl-C stops all
 npm run agents:install / agents:uninstall   # macOS LaunchAgent: run the dispatcher persistently
 ```
 
@@ -36,6 +37,7 @@ Always run `lint`, `typecheck`, `test`, and `build` before considering a change 
 - **Agent layer** in `agent/` (plain Node ESM, run via npm scripts): `dispatcher.mjs` (claim → route by `agent` label via `routes.json` → run → report to board + Telegram), `mcp-server.mjs` (board tools over stdio), `telegram-bot.mjs` (messages → tasks), `lib/api.mjs` + `lib/telegram.mjs`. **The dispatcher is dry-run by default**; `--execute` / `AGENT_EXECUTE=1` actually runs runner commands. Results always go to **Review** (human gate), never straight to Done.
   - `launch.mjs` (`npm run agents`) is the **process manager** that ties the layer together: it spawns the board in `api` mode, polls `/api/board` until ready, then starts the dispatcher (and the inbound bot only if `--telegram` is passed), prefixing each child's output and tearing them all down on Ctrl-C or if any one exits. The built-in bot is **off by default** — the assumed inbound front door is an external bot (e.g. hans) that enqueues via the board MCP, while the dispatcher still posts results over `TELEGRAM_BOT_TOKEN` (sending doesn't collide with an external poller; two `getUpdates` pollers on one token do → `409 Conflict`). Flags: `--execute`, `--telegram`, `--prod`, `--no-board`.
   - `launchd/install.mjs` (`npm run agents:install`) writes + loads a macOS LaunchAgent (`KeepAlive`/`RunAtLoad`) that runs only the dispatcher persistently; it widens `PATH` so the runner can find `claude`. Needs a board reachable at `BOARD_URL`.
+  - `merge-watcher.mjs` (`npm run watcher`, started by `npm run agents` unless `--no-watcher`) closes the loop: each sweep it scans **Review** cards, extracts a `github.com/.../pull/N` url from `task.result` (pure helper in `lib/prs.mjs`, unit-tested in `lib/prs.test.mjs`), asks `gh` if that PR is merged, and if so moves the card to **Done** + notifies Telegram. It only shells out to `gh` when a Review card actually carries a PR url, so it's silent until there's something to watch. Interval: `WATCHER_INTERVAL` ms (default 30000) or `--interval`. The bundled `commit-push` route (in `routes.example.json`) is what produces those PRs — it wraps the prompt with a branch + `gh pr create --fill` + `BOARD_PR:` instruction. Note: `agent/**/*.test.mjs` is now in the vitest `include`.
 - **UI** is in `components/`. Orchestrator `BoardApp.tsx`; drag-and-drop in `Board.tsx`; prompt-first card `TaskCard.tsx` (also renders the agent result block).
 
 ## Design system

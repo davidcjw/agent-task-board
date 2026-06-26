@@ -6,14 +6,15 @@
 // colour-prefixed output from every process, and shuts them all down cleanly on
 // Ctrl-C (or if any one of them dies). This is what `npm run agents` runs.
 //
-// The built-in Telegram bot is OFF by default — use an external front door (e.g.
-// hans / telegram-claude-agent) for inbound, and the dispatcher still posts
-// results to your chat. Pass --telegram to also run the built-in bot.
+// The built-in Telegram bot is ON whenever TELEGRAM_BOT_TOKEN is set — every
+// message you send it becomes a queued task. Turn it off with --no-telegram (do
+// that when an external front door like hans owns inbound on the same bot; two
+// getUpdates pollers on one token 409). The dispatcher posts results either way.
 //
 // Usage:
-//   npm run agents                  # board + dispatcher (dry-run); no built-in bot
+//   npm run agents                  # board + dispatcher + watcher (+ bot if a token is set)
 //   npm run agents -- --execute     # let the dispatcher actually run runners
-//   npm run agents -- --telegram    # also run the built-in inbound bot (needs a token)
+//   npm run agents -- --no-telegram # don't run the built-in inbound bot
 //   npm run agents -- --prod        # serve a production build (run `npm run build` first)
 //   npm run agents -- --no-board    # attach to an already-running board (BOARD_URL)
 //   npm run agents -- --no-watcher  # don't run the merge-watcher (Review→Done on PR merge)
@@ -27,10 +28,10 @@ const has = (f) => args.includes(f);
 
 const EXECUTE = has("--execute") || process.env.AGENT_EXECUTE === "1";
 const PROD = has("--prod");
-const WITH_TELEGRAM = has("--telegram"); // built-in inbound bot is opt-in
+const NO_TELEGRAM = has("--no-telegram"); // built-in bot is auto-on when a token is set
 const NO_BOARD = has("--no-board");
 const NO_WATCHER = has("--no-watcher");
-const HAS_TELEGRAM = WITH_TELEGRAM && Boolean(process.env.TELEGRAM_BOT_TOKEN);
+const RUN_TELEGRAM = !NO_TELEGRAM && Boolean(process.env.TELEGRAM_BOT_TOKEN);
 
 const BOARD_URL = (process.env.BOARD_URL || "http://localhost:3000").replace(/\/$/, "");
 const READY_URL = `${BOARD_URL}/api/board`;
@@ -116,7 +117,7 @@ async function waitForBoard(timeoutMs = 60000) {
 }
 
 async function main() {
-  sys(`agent control plane · ${EXECUTE ? "EXECUTE" : "dry-run"}${HAS_TELEGRAM ? " · telegram" : ""}`);
+  sys(`agent control plane · ${EXECUTE ? "EXECUTE" : "dry-run"}${RUN_TELEGRAM ? " · telegram" : ""}`);
 
   if (!NO_BOARD) {
     const nextBin = path.join(process.cwd(), "node_modules", ".bin", "next");
@@ -142,12 +143,12 @@ async function main() {
 
   if (!NO_WATCHER) start("watcher", process.execPath, ["agent/merge-watcher.mjs"]);
 
-  if (WITH_TELEGRAM && !process.env.TELEGRAM_BOT_TOKEN) {
-    sys("--telegram given but no TELEGRAM_BOT_TOKEN — skipping the built-in bot.");
-  } else if (HAS_TELEGRAM) {
+  if (RUN_TELEGRAM) {
     start("telegram", process.execPath, ["agent/telegram-bot.mjs"]);
+  } else if (NO_TELEGRAM) {
+    sys("built-in bot off (--no-telegram) — use your external bot (e.g. hans) for inbound.");
   } else {
-    sys("built-in bot off — use your external bot (e.g. hans) for inbound; pass --telegram to run it here.");
+    sys("built-in bot off — set TELEGRAM_BOT_TOKEN to queue tasks from Telegram.");
   }
 
   sys("control plane up. Ctrl-C to stop everything.");

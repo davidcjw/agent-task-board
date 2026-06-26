@@ -6,6 +6,7 @@
 // Message format:
 //   "Refactor the auth module and add tests"      → queued, default agent
 //   "[Claude Code] fix the flaky avatar test #bug" → agent "Claude Code", tag "bug"
+//   "[commit-push] add a favicon #repo:my-app"     → runs in <AGENT_REPO_BASE>/my-app
 //   /id    → replies with this chat's id (set it as TELEGRAM_CHAT_ID for dispatcher notifications)
 //
 // Requires: TELEGRAM_BOT_TOKEN. Run the board (npm run dev) first.
@@ -13,6 +14,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addTask } from "./lib/api.mjs";
+import { parseMessage } from "./lib/message.mjs";
+import { repoFromTags } from "./lib/routes.mjs";
 import { getUpdates, sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 if (!telegramEnabled()) {
@@ -38,19 +41,6 @@ function saveOffset(o) {
   }
 }
 
-function parseMessage(text) {
-  let agent = "";
-  let body = text.trim();
-  const bracket = body.match(/^\[([^\]]+)\]\s*/);
-  if (bracket) {
-    agent = bracket[1].trim();
-    body = body.slice(bracket[0].length).trim();
-  }
-  const tags = [...body.matchAll(/#([\w-]+)/g)].map((m) => m[1]);
-  const title = (body.split("\n")[0] || "task").replace(/\s+/g, " ").slice(0, 80);
-  return { title, prompt: body, agent, tags, status: "queued" };
-}
-
 async function handle(message) {
   const chatId = message.chat?.id;
   const text = (message.text || "").trim();
@@ -59,7 +49,7 @@ async function handle(message) {
   if (text === "/start" || text === "/help") {
     await sendMessage(
       chatId,
-      "Agent Task Board bot.\n\nSend me a task and I'll queue it:\n• \"Refactor auth and add tests\"\n• \"[Claude Code] fix flaky test #bug\"\n\n/id — show this chat id (set as TELEGRAM_CHAT_ID for dispatch + completion notifications)",
+      "Agent Task Board bot.\n\nSend me a task and I'll queue it:\n• \"Refactor auth and add tests\"\n• \"[Claude Code] fix flaky test #bug\"\n• \"[commit-push] add a favicon #repo:my-app\"\n\n#repo:<name> picks which repo a code task runs in.\n/id — show this chat id (set as TELEGRAM_CHAT_ID for dispatch + completion notifications)",
     );
     return;
   }
@@ -71,8 +61,10 @@ async function handle(message) {
   try {
     const input = parseMessage(text);
     const task = await addTask(input);
+    const repo = repoFromTags(input.tags);
     const to = input.agent ? ` → ${input.agent}` : "";
-    await sendMessage(chatId, `📋 Queued "${task.title}"${to}\nid ${task.id.slice(0, 8)}`);
+    const where = repo ? ` · repo ${repo}` : "";
+    await sendMessage(chatId, `📋 Queued "${task.title}"${to}${where}\nid ${task.id.slice(0, 8)}`);
     console.log(`queued "${task.title}" (${task.id})`);
   } catch (e) {
     await sendMessage(chatId, `⚠️ Couldn't queue that: ${e.message}`);

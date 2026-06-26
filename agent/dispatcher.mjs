@@ -15,8 +15,10 @@
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { claimNext, reportResult } from "./lib/api.mjs";
+import { missingRepoTag, resolveCwd } from "./lib/routes.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
@@ -33,6 +35,8 @@ const TIMEOUT = Number(process.env.AGENT_TIMEOUT || "1200000"); // 20 min
 const WORKER = val("--worker", process.env.AGENT_WORKER || "dispatcher");
 const AGENT_FILTER = val("--agent", "") || undefined;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+// Base dir for `repo:<name>` tags — a route's "{repo}" cwd resolves under here.
+const REPO_BASE = process.env.AGENT_REPO_BASE || path.join(os.homedir(), "code");
 
 const ROUTES = loadRoutes();
 
@@ -71,10 +75,10 @@ async function notify(text) {
 function runCommand(route, task) {
   return new Promise((resolve) => {
     const cmdArgs = (route.args || []).map((a) => fill(a, task));
-    const child = spawn(route.command, cmdArgs, {
-      cwd: path.resolve(process.cwd(), route.cwd || "."),
-      env: process.env,
-    });
+    const cwd = resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
+    if (missingRepoTag(route, task))
+      console.warn(`⚠ no repo: tag on "${task.title}" — running in ${cwd}`);
+    const child = spawn(route.command, cmdArgs, { cwd, env: process.env });
     let out = "";
     let err = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT);
@@ -112,7 +116,12 @@ async function processTask(task) {
 
   let outcome;
   if (!EXECUTE) {
-    const preview = route ? `${route.command} ${(route.args || []).map((a) => fill(a, task)).join(" ")}` : "no runner";
+    let preview = "no runner";
+    if (route) {
+      const cwd = resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
+      const cmd = `${route.command} ${(route.args || []).map((a) => fill(a, task)).join(" ")}`;
+      preview = `(cwd: ${cwd})\n${cmd}`;
+    }
     outcome = { result: `[dry-run] would run:\n${preview}`, error: false };
   } else if (!route) {
     outcome = { result: `No runner configured for agent "${task.agent}".`, error: true };

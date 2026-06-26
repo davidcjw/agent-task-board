@@ -43,3 +43,6 @@ next-env.d.ts
 
 # Local board data (server-backed / API mode)
 .data/
+
+# Local dispatcher routing (personal agents + repo paths). Commit routes.example.json instead.
+/agent/routes.json

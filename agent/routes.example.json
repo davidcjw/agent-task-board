@@ -2,23 +2,36 @@
   "default": {
     "command": "claude",
     "args": ["-p", "{prompt}", "--output-format", "json", "--dangerously-skip-permissions"],
-    "cwd": "."
+    "cwd": "{repo}"
   },
   "Claude Code": {
     "command": "claude",
     "args": ["-p", "{prompt}", "--output-format", "json", "--dangerously-skip-permissions"],
-    "cwd": "."
+    "cwd": "{repo}"
   },
   "Cursor": {
     "command": "echo",
     "args": ["Wire up a Cursor agent runner here. Task: {title}"],
-    "cwd": "."
+    "cwd": "{repo}"
   },
   "commit-push": {
     "command": "claude",
     "args": [
       "-p",
       "On a new git branch named atb/{id}, implement the task below, commit, push the branch, and open a PR with `gh pr create --fill`. End your reply with exactly one line: BOARD_PR: <the pull request url>. Task: {prompt}",
+      "--output-format",
+      "json",
+      "--dangerously-skip-permissions"
+    ],
+    "cwd": "{repo}"
+  },
+  "knowledge-base": {
+    "command": "claude",
+    "args": [
+      "-p",
+      "{prompt}",
+      "--agent",
+      "knowledge-base",
       "--output-format",
       "json",
       "--dangerously-skip-permissions"

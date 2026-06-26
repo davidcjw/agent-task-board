@@ -7,6 +7,7 @@ import type { Status, Task } from "@/lib/types";
 import { STATUSES } from "@/lib/columns";
 import { formatClock, formatDuration, formatRelative } from "@/lib/time";
 import { cn } from "@/lib/cn";
+import { extractPrUrl, prNumber, splitUrls } from "@/lib/urls";
 import { STATUS_UI } from "./status";
 import { Text } from "./ds";
 import {
@@ -15,10 +16,34 @@ import {
   ChevronRightIcon,
   ClockIcon,
   CopyIcon,
+  ExternalLinkIcon,
   GripIcon,
   PencilIcon,
   TrashIcon,
 } from "./icons";
+
+/** Render result text with any URLs turned into clickable links. */
+function LinkedText({ text }: { text: string }) {
+  return (
+    <>
+      {splitUrls(text).map((part, i) =>
+        part.url ? (
+          <a
+            key={i}
+            href={part.value}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all text-running underline decoration-running/40 underline-offset-2 hover:decoration-running"
+          >
+            {part.value}
+          </a>
+        ) : (
+          <span key={i}>{part.value}</span>
+        ),
+      )}
+    </>
+  );
+}
 
 export interface TaskCardCallbacks {
   onCopied: (task: Task) => void;
@@ -110,8 +135,16 @@ export function TaskCardBody({
   onMove,
 }: CardBodyProps) {
   const [copied, setCopied] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
   const ui = STATUS_UI[task.status];
   const idx = STATUSES.indexOf(task.status);
+  // Heuristic for "would the 4-line clamp hide something" — avoids measuring in
+  // an effect (the React Compiler lint forbids setState inside effect bodies).
+  const resultIsLong =
+    !!task.result && (task.result.length > 200 || task.result.split("\n").length > 4);
+  // A PR link gets its own one-click field so you don't have to expand the result.
+  const prUrl = extractPrUrl(task.result);
+  const prNum = prNumber(prUrl);
 
   async function copyPrompt() {
     const text = task.prompt.trim();
@@ -219,6 +252,25 @@ export function TaskCardBody({
           </div>
         )}
 
+        {/* PR link — a dedicated one-click field (derived from the result) so you
+            don't have to expand the result and hunt for the url */}
+        {prUrl && (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={prUrl}
+            className={cn(
+              "mt-2 flex items-center gap-1.5 rounded-[3px] border border-running/40 bg-running/[0.08] px-2 py-1.5",
+              "font-mono text-[11px] text-running transition-colors hover:bg-running/[0.14]",
+              "focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
+            )}
+          >
+            <ExternalLinkIcon size={12} className="shrink-0" />
+            <span className="truncate">{prNum ? `Pull request #${prNum}` : "View pull request"}</span>
+          </a>
+        )}
+
         {/* agent result — written back by the worker/dispatcher */}
         {task.result ? (
           <div
@@ -240,9 +292,28 @@ export function TaskCardBody({
                 <span className="font-mono text-[9px] text-muted">· {task.claimedBy}</span>
               )}
             </div>
-            <p className="line-clamp-4 whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted">
-              {task.result}
+            <p
+              className={cn(
+                "whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted",
+                resultOpen ? "max-h-60 overflow-y-auto" : "line-clamp-4",
+              )}
+            >
+              <LinkedText text={task.result} />
             </p>
+            {resultIsLong && (
+              <button
+                type="button"
+                onClick={() => setResultOpen((v) => !v)}
+                aria-expanded={resultOpen}
+                className={cn(
+                  "mt-1 font-mono text-[9px] uppercase tracking-wider transition-colors",
+                  "text-muted/70 hover:text-running",
+                  "focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
+                )}
+              >
+                {resultOpen ? "show less" : "show more"}
+              </button>
+            )}
           </div>
         ) : null}
 

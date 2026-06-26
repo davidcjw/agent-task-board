@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { claimNext, reportResult } from "./lib/api.mjs";
 import { finishPr, preflight, restore, startBranch } from "./lib/git.mjs";
+import { extractPrUrl } from "./lib/prs.mjs";
 import {
   branchName,
   implementPrompt,
@@ -173,9 +174,14 @@ async function processTask(task) {
 
   await reportResult(task.id, { result: outcome.result, error: outcome.error, status: "review" });
   const head = outcome.error ? `❌ Failed "${task.title}"` : `✅ Done "${task.title}" by ${label}`;
-  const snippet = outcome.result.length > 500 ? outcome.result.slice(0, 500) + "…" : outcome.result;
-  console.log(`${outcome.error ? "✗" : "✓"} ${task.title}`);
-  await notify(`${head}\n\n${snippet}\n\n(in Review for your approval)`);
+  // Surface the PR link as its own line (Telegram auto-links it) so it's always
+  // clickable — never lost to the snippet cap — and drop the raw BOARD_PR marker.
+  const prUrl = extractPrUrl(outcome.result);
+  const prLine = prUrl ? `\n🔗 Review PR: ${prUrl}` : "";
+  const body = outcome.result.replace(/\n*BOARD_PR:\s*\S+/g, "").trim();
+  const snippet = body.length > 500 ? body.slice(0, 500) + "…" : body;
+  console.log(`${outcome.error ? "✗" : "✓"} ${task.title}${prUrl ? ` → ${prUrl}` : ""}`);
+  await notify(`${head}${prLine}\n\n${snippet}\n\n(in Review for your approval)`);
 }
 
 async function main() {

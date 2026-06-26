@@ -93,6 +93,10 @@ The board seeds itself with a sample set of tasks on first visit. Clear it (tras
 
 The board is split into pure, framework-free logic and a thin React layer, which keeps the core fully unit-testable.
 
+<p align="center">
+  <img src="docs/architecture.png" alt="Agent Task Board architecture — browser engines and the shared board.ts reducer, the Next.js API + file-backed store, and the opt-in agent layer (inbound, dispatcher, runners, merge-watcher)" width="820">
+</p>
+
 ```
 lib/
   types.ts        Domain types (Task, Status, BoardState)

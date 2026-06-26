@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   branchName,
   implementPrompt,
+  matchRepoSlug,
   missingRepoTag,
+  normalizeRepoKey,
+  repoCommandName,
   repoFromTags,
   resolveCwd,
   resolveRepoPath,
+  resultStatus,
   shouldOpenPr,
   worktreePath,
 } from "./routes.mjs";
@@ -114,6 +118,24 @@ describe("shouldOpenPr", () => {
   });
 });
 
+describe("resultStatus", () => {
+  it("sends a successful no-PR run straight to Done", () => {
+    expect(resultStatus({ execute: true, error: false, prOpened: false })).toBe("done");
+  });
+
+  it("keeps a PR task in Review for approval", () => {
+    expect(resultStatus({ execute: true, error: false, prOpened: true })).toBe("review");
+  });
+
+  it("keeps an errored run in Review", () => {
+    expect(resultStatus({ execute: true, error: true, prOpened: false })).toBe("review");
+  });
+
+  it("keeps dry-run previews in Review (nothing actually ran)", () => {
+    expect(resultStatus({ execute: false, error: false, prOpened: false })).toBe("review");
+  });
+});
+
 describe("branchName", () => {
   it("derives a stable branch from the task id", () => {
     expect(branchName({ id: "abc123" })).toBe("atb/abc123");
@@ -125,6 +147,60 @@ describe("implementPrompt", () => {
     const out = implementPrompt("add a favicon");
     expect(out).toMatch(/do NOT commit, push, or open a pull request/i);
     expect(out.endsWith("Task: add a favicon")).toBe(true);
+  });
+});
+
+describe("normalizeRepoKey", () => {
+  it("strips separators and lowercases", () => {
+    expect(normalizeRepoKey("Democratizing-Claude")).toBe("democratizingclaude");
+    expect(normalizeRepoKey("democratizing_claude")).toBe("democratizingclaude");
+    expect(normalizeRepoKey("democratizing.claude")).toBe("democratizingclaude");
+    expect(normalizeRepoKey(" my repo ")).toBe("myrepo");
+  });
+
+  it("is empty for empty / nullish input", () => {
+    expect(normalizeRepoKey("")).toBe("");
+    expect(normalizeRepoKey(undefined)).toBe("");
+  });
+});
+
+describe("matchRepoSlug", () => {
+  const NAMES = ["democratizing-claude", "agent-task-board", "the-chronicle-v2"];
+
+  it("matches a hyphenated dir from an underscored slug", () => {
+    expect(matchRepoSlug("democratizing_claude", NAMES).match).toBe("democratizing-claude");
+  });
+
+  it("matches with no separators at all", () => {
+    expect(matchRepoSlug("democratizingclaude", NAMES).match).toBe("democratizing-claude");
+  });
+
+  it("returns '' with no match when nothing fits", () => {
+    const r = matchRepoSlug("nope", NAMES);
+    expect(r.match).toBe("");
+    expect(r.candidates).toEqual([]);
+  });
+
+  it("reports candidates and no single match when ambiguous", () => {
+    const r = matchRepoSlug("my_app", ["my-app", "my_app"]);
+    expect(r.match).toBe("");
+    expect(r.candidates).toEqual(["my-app", "my_app"]);
+  });
+
+  it("returns '' for an empty slug", () => {
+    expect(matchRepoSlug("", NAMES).match).toBe("");
+  });
+});
+
+describe("repoCommandName", () => {
+  it("lowercases and turns hyphens into underscores", () => {
+    expect(repoCommandName("democratizing-claude")).toBe("democratizing_claude");
+    expect(repoCommandName("The-Chronicle-v2")).toBe("the_chronicle_v2");
+  });
+
+  it("trims leading/trailing underscores and caps at 32 chars", () => {
+    expect(repoCommandName("-weird-")).toBe("weird");
+    expect(repoCommandName("a".repeat(40))).toHaveLength(32);
   });
 });
 

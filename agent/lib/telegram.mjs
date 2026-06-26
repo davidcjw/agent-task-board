@@ -23,6 +23,28 @@ export async function sendMessage(chatId, text) {
   }
 }
 
+/**
+ * Register the bot's command menu (the `/`-autocomplete list). `commands` is an
+ * array of `{ command, description }`. Pass a `scope` (e.g.
+ * `{ type: "all_private_chats" }`) to target a command scope — Telegram resolves
+ * a chat's menu most-specific-first (chat > all_private_chats > default), so a
+ * populated narrower scope is required or an empty one there shadows `default`.
+ * No-ops (resolves false) if unconfigured.
+ */
+export async function setMyCommands(commands, scope) {
+  if (!TOKEN) return false;
+  try {
+    const res = await fetch(`${API}/setMyCommands`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(scope ? { commands, scope } : { commands }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Long-poll for updates since `offset`. Returns the raw updates array. */
 export async function getUpdates(offset, timeout = 25) {
   if (!TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not set");

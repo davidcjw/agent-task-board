@@ -26,6 +26,7 @@ import {
   missingRepoTag,
   repoFromTags,
   resolveCwd,
+  resultStatus,
   shouldOpenPr,
 } from "./lib/routes.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
@@ -174,16 +175,22 @@ async function processTask(task) {
     outcome = await runCommand(route, runTask);
   }
 
-  await reportResult(task.id, { result: outcome.result, error: outcome.error, status: "review" });
+  // A task that opened no PR (a question, info/subagent work, or a no-diff run)
+  // needs no review gate, so it lands straight in Done; PRs and errors wait in
+  // Review (the merge-watcher advances merged PRs to Done).
+  const prUrl = extractPrUrl(outcome.result);
+  const status = resultStatus({ execute: EXECUTE, error: outcome.error, prOpened: Boolean(prUrl) });
+  await reportResult(task.id, { result: outcome.result, error: outcome.error, status });
+
   const head = outcome.error ? `❌ Failed "${task.title}"` : `✅ Done "${task.title}" by ${label}`;
   // Surface the PR link as its own line (Telegram auto-links it) so it's always
   // clickable — never lost to the snippet cap — and drop the raw BOARD_PR marker.
-  const prUrl = extractPrUrl(outcome.result);
   const prLine = prUrl ? `\n🔗 Review PR: ${prUrl}` : "";
   const body = outcome.result.replace(/\n*BOARD_PR:\s*\S+/g, "").trim();
   const snippet = body.length > 500 ? body.slice(0, 500) + "…" : body;
-  console.log(`${outcome.error ? "✗" : "✓"} ${task.title}${prUrl ? ` → ${prUrl}` : ""}`);
-  await notify(`${head}${prLine}\n\n${snippet}\n\n(in Review for your approval)`);
+  const landed = status === "done" ? "(moved to Done)" : "(in Review for your approval)";
+  console.log(`${outcome.error ? "✗" : "✓"} ${task.title} → ${status}${prUrl ? ` ${prUrl}` : ""}`);
+  await notify(`${head}${prLine}\n\n${snippet}\n\n${landed}`);
 }
 
 async function claim() {

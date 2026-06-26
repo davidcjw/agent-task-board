@@ -53,6 +53,20 @@ export function shouldOpenPr(route, task) {
   return Boolean(route && route.pr) && Boolean(repoFromTags(task && task.tags));
 }
 
+/**
+ * Which lane a finished task lands in:
+ *  - dry-run previews stay in Review (nothing actually ran),
+ *  - errors stay in Review (a human should look at the failure),
+ *  - a task that opened a PR waits in Review for approval (the merge-watcher
+ *    moves it to Done once the PR is merged),
+ *  - everything else — a plain question, an info/subagent task, or a code run
+ *    that produced no diff — needs no review gate, so it goes straight to Done.
+ */
+export function resultStatus({ execute, error, prOpened }) {
+  if (!execute || error || prOpened) return "review";
+  return "done";
+}
+
 /** The branch the dispatcher opens a task's PR from. */
 export function branchName(task) {
   return `atb/${task && task.id}`;
@@ -62,6 +76,45 @@ export function branchName(task) {
 export function worktreePath(baseDir, repo, id) {
   const name = (repo || "").split(/[/\\]/).filter(Boolean).pop() || "repo";
   return path.join(baseDir, `${name}-${id}`);
+}
+
+/**
+ * Collapse a repo identifier to a separator-insensitive key: lowercase, with
+ * spaces / dots / hyphens / underscores stripped. Lets a typed Telegram slug
+ * (`/democratizing_claude`, hyphens disallowed in commands) match a real dir
+ * named `democratizing-claude` without guessing which separator was meant.
+ */
+export function normalizeRepoKey(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[\s._-]/g, "");
+}
+
+/**
+ * Match a typed repo slug against a list of directory names, ignoring case and
+ * separators. Returns `{ match, candidates }`:
+ *  - `match` is the single name whose key equals the slug's, or "" for 0 / >1.
+ *  - `candidates` lists every name sharing that key (so a caller can report an
+ *    ambiguous slug like `my-app` vs `my_app`).
+ */
+export function matchRepoSlug(slug, names) {
+  const key = normalizeRepoKey(slug);
+  if (!key) return { match: "", candidates: [] };
+  const candidates = (names || []).filter((n) => normalizeRepoKey(n) === key);
+  return { match: candidates.length === 1 ? candidates[0] : "", candidates };
+}
+
+/**
+ * A Telegram `setMyCommands` command name for a repo dir: lowercase, only
+ * `[a-z0-9_]`, no leading/trailing underscore, ≤32 chars (Telegram's limit).
+ * Hyphens become underscores — `democratizing-claude` → `democratizing_claude`.
+ */
+export function repoCommandName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
 }
 
 /** Wrap a task prompt so the agent ONLY edits files — the dispatcher does the

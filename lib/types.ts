@@ -26,6 +26,8 @@ export interface Task {
   result?: string;
   /** True if the agent run failed; pairs with a result describing the error. */
   error?: boolean;
+  /** Set when archived (hidden from the lane); cleared on restore. */
+  archivedAt?: number;
 }
 
 /**
@@ -47,3 +49,6 @@ export interface TaskInput {
   notes: string;
   status?: Status;
 }
+
+/** A patch for updating a task: editable input fields plus the archive toggle. */
+export type TaskPatch = Partial<TaskInput> & { archived?: boolean };

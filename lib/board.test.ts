@@ -7,6 +7,7 @@ import {
   createTask,
   deleteTask,
   emptyState,
+  isArchived,
   moveTask,
   normalizeTags,
   parseTags,
@@ -175,6 +176,29 @@ describe("updateTask", () => {
     expect(state.columns.running).toContain(id);
     expect(state.columns.queued).not.toContain(id);
     expect(state.tasks[id].startedAt).toBe(8888);
+  });
+
+  it("archives and restores via the archived flag without moving the task", () => {
+    let state = boardWith({ title: "a", status: "done" });
+    const id = state.columns.done[0];
+
+    state = updateTask(state, id, { archived: true }, 9000);
+    expect(state.tasks[id].archivedAt).toBe(9000);
+    expect(isArchived(state.tasks[id])).toBe(true);
+    expect(state.columns.done).toContain(id); // stays in its lane, just hidden
+
+    state = updateTask(state, id, { archived: false }, 9100);
+    expect(state.tasks[id].archivedAt).toBeUndefined();
+    expect(isArchived(state.tasks[id])).toBe(false);
+  });
+
+  it("leaves archivedAt untouched when a patch omits `archived`", () => {
+    let state = boardWith({ title: "a", status: "done" });
+    const id = state.columns.done[0];
+    state = updateTask(state, id, { archived: true }, 9000);
+    state = updateTask(state, id, { title: "renamed" }, 9200);
+    expect(state.tasks[id].archivedAt).toBe(9000);
+    expect(state.tasks[id].title).toBe("renamed");
   });
 });
 

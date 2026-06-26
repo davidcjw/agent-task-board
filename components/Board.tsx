@@ -24,6 +24,8 @@ interface BoardProps extends TaskCardCallbacks {
   tasksById: Record<string, Task>;
   /** Filtered, ordered tasks to render per column. */
   columnTasks: Record<Status, Task[]>;
+  /** Archived tasks per column (revealed behind a toggle). */
+  archivedTasks: Record<Status, Task[]>;
   now: number;
   filtering: boolean;
   onAdd: (status: Status) => void;
@@ -38,6 +40,7 @@ export function Board({
   columns,
   tasksById,
   columnTasks,
+  archivedTasks,
   now,
   filtering,
   onAdd,
@@ -108,6 +111,7 @@ export function Board({
             key={status}
             status={status}
             tasks={columnTasks[status]}
+            archived={archivedTasks[status]}
             now={now}
             filtering={filtering}
             onAdd={onAdd}

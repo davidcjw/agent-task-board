@@ -11,14 +11,17 @@ import { extractPrUrl, prNumber, splitUrls } from "@/lib/urls";
 import { STATUS_UI } from "./status";
 import { Text } from "./ds";
 import {
+  ArchiveIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   GripIcon,
   PencilIcon,
+  RestoreIcon,
   TrashIcon,
 } from "./icons";
 
@@ -50,6 +53,8 @@ export interface TaskCardCallbacks {
   onEdit: (task: Task) => void;
   onDelete: (task: Task) => void;
   onMove: (task: Task, dir: -1 | 1) => void;
+  onArchive: (task: Task) => void;
+  onUnarchive: (task: Task) => void;
 }
 
 interface CardBodyProps extends TaskCardCallbacks {
@@ -57,8 +62,78 @@ interface CardBodyProps extends TaskCardCallbacks {
   now: number;
   overlay?: boolean;
   dragging?: boolean;
+  /** Render the collapsed one-line form by default (used by the Done lane). */
+  compact?: boolean;
+  /** This card is archived — show "restore" instead of "archive". */
+  archived?: boolean;
   handleProps?: Record<string, unknown>;
   setHandleRef?: (el: HTMLElement | null) => void;
+}
+
+function doneDuration(task: Task, now: number): string {
+  return formatDuration((task.completedAt ?? now) - (task.startedAt ?? task.createdAt));
+}
+
+/** Collapsed one-line card: title + duration + PR link + archive/restore. */
+function CompactRow({
+  task,
+  now,
+  archived,
+  onExpand,
+  onArchive,
+  onUnarchive,
+}: {
+  task: Task;
+  now: number;
+  archived?: boolean;
+  onExpand: () => void;
+  onArchive: (task: Task) => void;
+  onUnarchive: (task: Task) => void;
+}) {
+  const ui = STATUS_UI[task.status];
+  const prUrl = extractPrUrl(task.result);
+  const prNum = prNumber(prUrl);
+  return (
+    <div
+      className={cn(
+        "group relative flex items-center gap-2 overflow-hidden rounded-[4px] border border-line bg-surface/80 py-1.5 pl-3 pr-1.5 transition-colors hover:border-line-strong",
+        archived && "opacity-60",
+      )}
+      data-testid="task-card"
+      data-status={task.status}
+    >
+      <span aria-hidden className="absolute left-0 top-0 h-full w-[2px]" style={{ backgroundColor: ui.hex }} />
+      <button
+        type="button"
+        onClick={onExpand}
+        title="Expand"
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+      >
+        <CheckIcon size={12} className="shrink-0" style={{ color: ui.hex }} />
+        <span className="truncate text-[12.5px] leading-tight text-ink">{task.title}</span>
+      </button>
+      <span className="tnum shrink-0 font-mono text-[10px] text-muted">{doneDuration(task, now)}</span>
+      {prUrl && (
+        <a
+          href={prUrl}
+          target="_blank"
+          rel="noreferrer"
+          title={prUrl}
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-running hover:underline"
+        >
+          <ExternalLinkIcon size={11} />
+          {prNum ? `#${prNum}` : ""}
+        </a>
+      )}
+      <IconButton
+        label={archived ? "Restore" : "Archive"}
+        onClick={() => (archived ? onUnarchive(task) : onArchive(task))}
+      >
+        {archived ? <RestoreIcon size={14} /> : <ArchiveIcon size={14} />}
+      </IconButton>
+    </div>
+  );
 }
 
 function IconButton({
@@ -127,17 +202,36 @@ export function TaskCardBody({
   now,
   overlay,
   dragging,
+  compact,
+  archived,
   handleProps,
   setHandleRef,
   onCopied,
   onEdit,
   onDelete,
   onMove,
+  onArchive,
+  onUnarchive,
 }: CardBodyProps) {
   const [copied, setCopied] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
+  const [open, setOpen] = useState(false);
   const ui = STATUS_UI[task.status];
   const idx = STATUSES.indexOf(task.status);
+
+  // Done cards render as a one-line summary until expanded (keeps the lane tidy).
+  if (compact && !open && !overlay) {
+    return (
+      <CompactRow
+        task={task}
+        now={now}
+        archived={archived}
+        onExpand={() => setOpen(true)}
+        onArchive={onArchive}
+        onUnarchive={onUnarchive}
+      />
+    );
+  }
   // Heuristic for "would the 4-line clamp hide something" — avoids measuring in
   // an effect (the React Compiler lint forbids setState inside effect bodies).
   const resultIsLong =
@@ -341,9 +435,22 @@ export function TaskCardBody({
             <IconButton label="Edit task" onClick={() => onEdit(task)}>
               <PencilIcon size={15} />
             </IconButton>
+            {compact && (
+              <IconButton
+                label={archived ? "Restore" : "Archive"}
+                onClick={() => (archived ? onUnarchive(task) : onArchive(task))}
+              >
+                {archived ? <RestoreIcon size={15} /> : <ArchiveIcon size={15} />}
+              </IconButton>
+            )}
             <IconButton label="Delete task" onClick={() => onDelete(task)}>
               <TrashIcon size={15} />
             </IconButton>
+            {compact && (
+              <IconButton label="Collapse" onClick={() => setOpen(false)}>
+                <ChevronUpIcon size={15} />
+              </IconButton>
+            )}
           </div>
         </div>
       </div>
@@ -355,11 +462,13 @@ interface SortableProps extends TaskCardCallbacks {
   task: Task;
   now: number;
   index: number;
+  compact?: boolean;
+  archived?: boolean;
 }
 
 /** dnd-kit sortable wrapper. The grip is the only drag activator so the card's
  *  buttons and text stay clickable/selectable. */
-export function SortableTaskCard({ task, now, index, ...callbacks }: SortableProps) {
+export function SortableTaskCard({ task, now, index, compact, archived, ...callbacks }: SortableProps) {
   const { setNodeRef, setActivatorNodeRef, listeners, attributes, transform, transition, isDragging } =
     useSortable({ id: task.id });
 
@@ -376,6 +485,8 @@ export function SortableTaskCard({ task, now, index, ...callbacks }: SortablePro
       <TaskCardBody
         task={task}
         now={now}
+        compact={compact}
+        archived={archived}
         dragging={isDragging}
         handleProps={{ ...listeners, ...attributes }}
         setHandleRef={setActivatorNodeRef}

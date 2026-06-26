@@ -147,3 +147,25 @@ export const ExternalLinkIcon = (p: IconProps) => (
     <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
   </Base>
 );
+
+export const ArchiveIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="4" width="18" height="4" rx="1" />
+    <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+    <path d="M10 12h4" />
+  </Base>
+);
+
+export const RestoreIcon = (p: IconProps) => (
+  <Base {...p}>
+    <rect x="3" y="4" width="18" height="4" rx="1" />
+    <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+    <path d="M12 18v-6M9.5 14.5 12 12l2.5 2.5" />
+  </Base>
+);
+
+export const ChevronUpIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="m18 15-6-6-6 6" />
+  </Base>
+);

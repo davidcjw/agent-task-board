@@ -1,28 +1,34 @@
 "use client";
 
+import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import type { Status, Task } from "@/lib/types";
 import { COLUMN_META } from "@/lib/columns";
 import { cn } from "@/lib/cn";
 import { STATUS_UI } from "./status";
-import { SortableTaskCard, type TaskCardCallbacks } from "./TaskCard";
+import { SortableTaskCard, TaskCardBody, type TaskCardCallbacks } from "./TaskCard";
 import { Text } from "./ds";
-import { PlusIcon } from "./icons";
+import { ChevronRightIcon, PlusIcon } from "./icons";
 
 interface ColumnProps extends TaskCardCallbacks {
   status: Status;
   tasks: Task[];
+  /** Archived tasks for this lane (hidden behind a reveal). */
+  archived?: Task[];
   now: number;
   onAdd: (status: Status) => void;
   filtering: boolean;
 }
 
-export function Column({ status, tasks, now, onAdd, filtering, ...callbacks }: ColumnProps) {
+export function Column({ status, tasks, archived = [], now, onAdd, filtering, ...callbacks }: ColumnProps) {
   const meta = COLUMN_META[status];
   const ui = STATUS_UI[status];
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const count = tasks.length;
+  // Done cards render compact; other lanes keep the full card.
+  const compact = status === "done";
+  const [showArchived, setShowArchived] = useState(false);
 
   return (
     <section
@@ -74,16 +80,37 @@ export function Column({ status, tasks, now, onAdd, filtering, ...callbacks }: C
       >
         <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
           {tasks.map((task, i) => (
-            <SortableTaskCard key={task.id} task={task} now={now} index={i} {...callbacks} />
+            <SortableTaskCard key={task.id} task={task} now={now} index={i} compact={compact} {...callbacks} />
           ))}
         </SortableContext>
 
-        {count === 0 && (
+        {count === 0 && archived.length === 0 && (
           <div className="grid flex-1 place-items-center rounded-[3px] border border-dashed border-line/70 py-8">
             <Text face="mono" size="micro" tone="muted" caps>
               {filtering ? "no matches" : "drop here"}
             </Text>
           </div>
+        )}
+
+        {archived.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowArchived((v) => !v)}
+              aria-expanded={showArchived}
+              className="mt-1 flex items-center gap-1 self-start font-mono text-[10px] uppercase tracking-wider text-muted/70 transition-colors hover:text-ink focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+            >
+              <ChevronRightIcon
+                size={12}
+                className={cn("transition-transform", showArchived && "rotate-90")}
+              />
+              {showArchived ? "hide" : "show"} archived ({archived.length})
+            </button>
+            {showArchived &&
+              archived.map((task) => (
+                <TaskCardBody key={task.id} task={task} now={now} compact archived {...callbacks} />
+              ))}
+          </>
         )}
       </div>
     </section>

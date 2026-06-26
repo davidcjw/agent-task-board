@@ -1,5 +1,5 @@
 import { emptyState } from "./board";
-import type { BoardState, Status, TaskInput } from "./types";
+import type { BoardState, Status, TaskInput, TaskPatch } from "./types";
 
 /**
  * Shared EMPTY sentinel: it is both the SSR snapshot and the "not yet
@@ -20,7 +20,7 @@ export interface BoardEngine {
   getServerSnapshot(): BoardState;
   hydrate(): void;
   addTask(input: TaskInput): void;
-  updateTask(id: string, patch: Partial<TaskInput>): void;
+  updateTask(id: string, patch: TaskPatch): void;
   deleteTask(id: string): void;
   moveTask(id: string, toStatus: Status, toIndex: number): void;
   commitDrag(columns: Record<Status, string[]>, movedId: string, toStatus: Status): void;

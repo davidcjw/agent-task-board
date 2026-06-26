@@ -17,7 +17,7 @@ import {
   type ClaimFilter,
 } from "@/lib/board";
 import { seedState } from "@/lib/seed";
-import type { BoardState, Status, Task, TaskInput } from "@/lib/types";
+import type { BoardState, Status, Task, TaskInput, TaskPatch } from "@/lib/types";
 
 function dataDir(): string {
   return process.env.BOARD_DATA_DIR || path.join(process.cwd(), ".data");
@@ -72,7 +72,7 @@ export const store = {
     });
   },
 
-  update(id: string, patch: Partial<TaskInput>): Promise<BoardState> {
+  update(id: string, patch: TaskPatch): Promise<BoardState> {
     return withLock(async () => {
       const board = updateTask(await readLocked(), id, patch);
       await writeLocked(board);

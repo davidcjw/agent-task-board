@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { STATUSES } from "@/lib/columns";
-import { tasksForColumn } from "@/lib/board";
+import { isArchived, tasksForColumn } from "@/lib/board";
 import { exportState, importState } from "@/lib/storage";
 import type { BoardState, Status, Task } from "@/lib/types";
 import { useBoard } from "@/lib/useBoard";
@@ -65,14 +65,26 @@ export function BoardApp() {
   const q = query.trim().toLowerCase();
   const columnTasks = useMemo(() => {
     const out = {} as Record<Status, Task[]>;
-    for (const s of STATUSES) out[s] = tasksForColumn(state, s).filter((t) => matches(t, q));
+    for (const s of STATUSES)
+      out[s] = tasksForColumn(state, s).filter((t) => !isArchived(t) && matches(t, q));
     return out;
   }, [state, q]);
 
+  const archivedTasks = useMemo(() => {
+    const out = {} as Record<Status, Task[]>;
+    for (const s of STATUSES)
+      out[s] = tasksForColumn(state, s).filter((t) => isArchived(t) && matches(t, q));
+    return out;
+  }, [state, q]);
+
+  // Lane counts reflect what's visible (archived cards are hidden).
   const counts = useMemo(() => {
     const c = { total: 0 } as Record<Status, number> & { total: number };
     for (const s of STATUSES) {
-      c[s] = state.columns[s].length;
+      c[s] = state.columns[s].reduce(
+        (n, id) => n + (state.tasks[id] && !isArchived(state.tasks[id]) ? 1 : 0),
+        0,
+      );
       c.total += c[s];
     }
     return c;
@@ -94,6 +106,21 @@ export function BoardApp() {
       if (to) board.moveTask(task.id, to, 0);
     },
     [board],
+  );
+
+  const handleArchive = useCallback(
+    (task: Task) => {
+      snapshotAnd(() => board.updateTask(task.id, { archived: true }), `Archived “${task.title}”`, state);
+    },
+    [board, state, snapshotAnd],
+  );
+
+  const handleUnarchive = useCallback(
+    (task: Task) => {
+      board.updateTask(task.id, { archived: false });
+      toasts.push(`Restored “${task.title}”`);
+    },
+    [board, toasts],
   );
 
   const handleDelete = useCallback(() => {
@@ -172,6 +199,7 @@ export function BoardApp() {
             columns={state.columns}
             tasksById={state.tasks}
             columnTasks={columnTasks}
+            archivedTasks={archivedTasks}
             now={now}
             filtering={q.length > 0}
             onAdd={(s) => setCreating(s)}
@@ -180,6 +208,8 @@ export function BoardApp() {
             onEdit={(t) => setEditing(t)}
             onDelete={(t) => setConfirmDelete(t)}
             onMove={handleMove}
+            onArchive={handleArchive}
+            onUnarchive={handleUnarchive}
           />
         )}
       </main>

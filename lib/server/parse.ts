@@ -1,6 +1,6 @@
 import { parseTags, normalizeTags } from "@/lib/board";
 import { STATUSES } from "@/lib/columns";
-import type { Status, TaskInput } from "@/lib/types";
+import type { Status, TaskInput, TaskPatch } from "@/lib/types";
 
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
@@ -28,14 +28,15 @@ export function coerceTaskInput(body: Record<string, unknown>): TaskInput {
   };
 }
 
-/** Build a partial TaskInput from a body (for update) — only present fields. */
-export function coerceTaskPatch(body: Record<string, unknown>): Partial<TaskInput> {
-  const patch: Partial<TaskInput> = {};
+/** Build a task patch from a body (for update) — only present fields. */
+export function coerceTaskPatch(body: Record<string, unknown>): TaskPatch {
+  const patch: TaskPatch = {};
   if ("title" in body) patch.title = asString(body.title);
   if ("prompt" in body) patch.prompt = asString(body.prompt);
   if ("agent" in body) patch.agent = asString(body.agent);
   if ("tags" in body) patch.tags = coerceTags(body.tags);
   if ("notes" in body) patch.notes = asString(body.notes);
+  if ("archived" in body) patch.archived = Boolean(body.archived);
   const status = coerceStatus(body.status);
   if (status) patch.status = status;
   return patch;

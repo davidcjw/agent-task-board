@@ -4,7 +4,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { BOARD_MODE, EMPTY, type BoardEngine } from "./boardEngine";
 import { localEngine } from "./localEngine";
 import { apiEngine } from "./apiEngine";
-import type { BoardState, Status, TaskInput } from "./types";
+import type { BoardState, Status, TaskInput, TaskPatch } from "./types";
 
 // Pick the engine once, at module load, from the build-time mode flag.
 const engine: BoardEngine = BOARD_MODE === "api" ? apiEngine : localEngine;
@@ -15,7 +15,7 @@ export interface BoardApi {
   /** "local" = this browser's storage; "live" = server-backed (agents can act on it). */
   mode: "local" | "live";
   addTask: (input: TaskInput) => void;
-  updateTask: (id: string, patch: Partial<TaskInput>) => void;
+  updateTask: (id: string, patch: TaskPatch) => void;
   deleteTask: (id: string) => void;
   moveTask: (id: string, toStatus: Status, toIndex: number) => void;
   commitDrag: (columns: Record<Status, string[]>, movedId: string, toStatus: Status) => void;

@@ -2,7 +2,7 @@
 // its inputs (ids and timestamps can be injected) so it is trivially testable.
 
 import { STATUSES } from "./columns";
-import type { BoardState, Status, Task, TaskInput } from "./types";
+import type { BoardState, Status, Task, TaskInput, TaskPatch } from "./types";
 
 export const SCHEMA_VERSION = 1;
 
@@ -76,11 +76,17 @@ export function addTask(state: BoardState, task: Task): BoardState {
   };
 }
 
-/** Patch a task's editable fields. If `status` changes, the task is moved too. */
+/** True when a task has been archived (hidden from its lane). */
+export function isArchived(task: Task): boolean {
+  return task.archivedAt !== undefined;
+}
+
+/** Patch a task's editable fields. If `status` changes, the task is moved too.
+ *  `archived` toggles the archive timestamp (set on true, cleared on false). */
 export function updateTask(
   state: BoardState,
   id: string,
-  patch: Partial<TaskInput>,
+  patch: TaskPatch,
   now = Date.now(),
 ): BoardState {
   const existing = state.tasks[id];
@@ -94,6 +100,8 @@ export function updateTask(
     agent: patch.agent !== undefined ? patch.agent.trim() : existing.agent,
     tags: patch.tags !== undefined ? normalizeTags(patch.tags) : existing.tags,
     notes: patch.notes !== undefined ? patch.notes : existing.notes,
+    archivedAt:
+      patch.archived === undefined ? existing.archivedAt : patch.archived ? now : undefined,
     updatedAt: now,
   };
 

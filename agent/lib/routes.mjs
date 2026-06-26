@@ -43,3 +43,28 @@ export function resolveCwd(route, task, { base, cwdBase }) {
 export function missingRepoTag(route, task) {
   return Boolean(route && (route.cwd || "").includes("{repo}") && !repoFromTags(task && task.tags));
 }
+
+/**
+ * Should this run commit + push + open a PR before landing in Review?
+ * Only when the route opts in (`pr: true`) AND the task targets a repo (a
+ * `repo:` tag) — so plain questions and the non-code subagent routes never PR.
+ */
+export function shouldOpenPr(route, task) {
+  return Boolean(route && route.pr) && Boolean(repoFromTags(task && task.tags));
+}
+
+/** The branch the dispatcher opens a task's PR from. */
+export function branchName(task) {
+  return `atb/${task && task.id}`;
+}
+
+/** Wrap a task prompt so the agent ONLY edits files — the dispatcher does the
+ *  commit/push/PR afterward, so the agent must not touch git itself. */
+export function implementPrompt(prompt) {
+  return (
+    "Implement the task below by editing files in this repository. Make the code " +
+    "changes only — do NOT commit, push, or open a pull request; that is handled " +
+    "automatically after you finish. Task: " +
+    (prompt || "")
+  );
+}

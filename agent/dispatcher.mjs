@@ -18,7 +18,15 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { claimNext, reportResult } from "./lib/api.mjs";
-import { missingRepoTag, resolveCwd } from "./lib/routes.mjs";
+import { finishPr, preflight, restore, startBranch } from "./lib/git.mjs";
+import {
+  branchName,
+  implementPrompt,
+  missingRepoTag,
+  repoFromTags,
+  resolveCwd,
+  shouldOpenPr,
+} from "./lib/routes.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
@@ -108,25 +116,59 @@ function runCommand(route, task) {
   });
 }
 
+// Run the agent (edits only), then the dispatcher itself branches, commits,
+// pushes, and opens the PR — so a finished task is already a reviewable PR.
+async function runWithPr(route, runTask, task) {
+  const cwd = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
+  const branch = branchName(task);
+
+  const pf = await preflight(cwd);
+  if (!pf.ok) return { result: `PR aborted: ${pf.error}`, error: true };
+
+  const created = await startBranch(cwd, branch);
+  if (!created.ok) return { result: `PR aborted: couldn't create branch ${branch}: ${created.error}`, error: true };
+
+  try {
+    const agent = await runCommand(route, runTask);
+    const fin = await finishPr(cwd, { branch, base: pf.base, title: task.title });
+    if (fin.error) return { result: `${agent.result}\n\n⚠ PR step failed: ${fin.error}`, error: true };
+    if (fin.noChanges) return { result: `${agent.result}\n\n(no file changes — no PR opened)`, error: agent.error };
+    console.log(`  ↳ opened PR ${fin.url}`);
+    return { result: `${agent.result}\n\nBOARD_PR: ${fin.url}`, error: agent.error };
+  } finally {
+    await restore(cwd, pf.base);
+  }
+}
+
+function dryRunPreview(route, runTask, opensPr) {
+  if (!route) return "[dry-run] no runner configured";
+  const cwd = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
+  const cmd = `${route.command} ${(route.args || []).map((a) => fill(a, runTask)).join(" ")}`;
+  let preview = `[dry-run] would run:\n(cwd: ${cwd})\n${cmd}`;
+  if (opensPr) preview += `\nthen: git checkout -b ${branchName(runTask)} → commit → push → gh pr create --fill`;
+  return preview;
+}
+
 async function processTask(task) {
   const route = routeFor(task);
   const label = task.agent || "default";
-  console.log(`▶ claimed "${task.title}" → ${label}`);
-  await notify(`🟢 Picked up "${task.title}"\n→ dispatched to ${label}`);
+  // Code routes (pr:true) that target a repo get the dispatcher-driven PR flow:
+  // the agent only edits, then we branch/commit/push/PR before Review.
+  const opensPr = route ? shouldOpenPr(route, task) : false;
+  const runTask = opensPr ? { ...task, prompt: implementPrompt(task.prompt) } : task;
+  const prNote = opensPr ? ` (→ PR in ${repoFromTags(task.tags)})` : "";
+  console.log(`▶ claimed "${task.title}" → ${label}${prNote}`);
+  await notify(`🟢 Picked up "${task.title}"\n→ dispatched to ${label}${prNote}`);
 
   let outcome;
   if (!EXECUTE) {
-    let preview = "no runner";
-    if (route) {
-      const cwd = resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
-      const cmd = `${route.command} ${(route.args || []).map((a) => fill(a, task)).join(" ")}`;
-      preview = `(cwd: ${cwd})\n${cmd}`;
-    }
-    outcome = { result: `[dry-run] would run:\n${preview}`, error: false };
+    outcome = { result: dryRunPreview(route, runTask, opensPr), error: false };
   } else if (!route) {
     outcome = { result: `No runner configured for agent "${task.agent}".`, error: true };
+  } else if (opensPr) {
+    outcome = await runWithPr(route, runTask, task);
   } else {
-    outcome = await runCommand(route, task);
+    outcome = await runCommand(route, runTask);
   }
 
   await reportResult(task.id, { result: outcome.result, error: outcome.error, status: "review" });

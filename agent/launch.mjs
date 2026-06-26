@@ -14,6 +14,7 @@
 // Usage:
 //   npm run agents                  # board + dispatcher + watcher (+ bot if a token is set)
 //   npm run agents -- --execute     # let the dispatcher actually run runners
+//   npm run agents -- --concurrency 3   # run up to 3 tasks at once (worktree-isolated)
 //   npm run agents -- --no-telegram # don't run the built-in inbound bot
 //   npm run agents -- --prod        # serve a production build (run `npm run build` first)
 //   npm run agents -- --no-board    # attach to an already-running board (BOARD_URL)
@@ -25,12 +26,17 @@ import process from "node:process";
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
+const val = (f) => {
+  const i = args.indexOf(f);
+  return i >= 0 && args[i + 1] ? args[i + 1] : "";
+};
 
 const EXECUTE = has("--execute") || process.env.AGENT_EXECUTE === "1";
 const PROD = has("--prod");
 const NO_TELEGRAM = has("--no-telegram"); // built-in bot is auto-on when a token is set
 const NO_BOARD = has("--no-board");
 const NO_WATCHER = has("--no-watcher");
+const CONCURRENCY = val("--concurrency"); // forwarded to the dispatcher (default 1)
 const RUN_TELEGRAM = !NO_TELEGRAM && Boolean(process.env.TELEGRAM_BOT_TOKEN);
 
 const BOARD_URL = (process.env.BOARD_URL || "http://localhost:3000").replace(/\/$/, "");
@@ -152,6 +158,7 @@ async function main() {
 
   const dispatcherArgs = ["agent/dispatcher.mjs"];
   if (EXECUTE) dispatcherArgs.push("--execute");
+  if (CONCURRENCY) dispatcherArgs.push("--concurrency", CONCURRENCY);
   start("dispatch", process.execPath, dispatcherArgs);
 
   if (!NO_WATCHER) start("watcher", process.execPath, ["agent/merge-watcher.mjs"]);

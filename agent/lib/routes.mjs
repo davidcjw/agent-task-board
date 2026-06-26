@@ -58,6 +58,12 @@ export function branchName(task) {
   return `atb/${task && task.id}`;
 }
 
+/** Filesystem path for a task's isolated git worktree under `baseDir`. */
+export function worktreePath(baseDir, repo, id) {
+  const name = (repo || "").split(/[/\\]/).filter(Boolean).pop() || "repo";
+  return path.join(baseDir, `${name}-${id}`);
+}
+
 /** Wrap a task prompt so the agent ONLY edits files — the dispatcher does the
  *  commit/push/PR afterward, so the agent must not touch git itself. */
 export function implementPrompt(prompt) {

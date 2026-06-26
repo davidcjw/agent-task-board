@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { claimNext, reportResult } from "./lib/api.mjs";
-import { finishPr, preflight, restore, startBranch } from "./lib/git.mjs";
+import { createWorktree, finishPr, removeWorktree } from "./lib/git.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import {
   branchName,
@@ -39,6 +39,9 @@ const val = (f, d) => {
 
 const ONCE = has("--once");
 const EXECUTE = has("--execute") || process.env.AGENT_EXECUTE === "1";
+// How many tasks to run at once. Each PR task runs in its own git worktree, so
+// concurrent tasks — even on the same repo — stay isolated. Default 1.
+const CONCURRENCY = Math.max(1, Number(val("--concurrency", process.env.AGENT_CONCURRENCY || "1")) || 1);
 const INTERVAL = Number(val("--interval", process.env.AGENT_INTERVAL || "3000"));
 const TIMEOUT = Number(process.env.AGENT_TIMEOUT || "1200000"); // 20 min
 const WORKER = val("--worker", process.env.AGENT_WORKER || "dispatcher");
@@ -81,11 +84,11 @@ async function notify(text) {
   if (telegramEnabled() && CHAT_ID) await sendMessage(CHAT_ID, text);
 }
 
-function runCommand(route, task) {
+function runCommand(route, task, cwdOverride) {
   return new Promise((resolve) => {
     const cmdArgs = (route.args || []).map((a) => fill(a, task));
-    const cwd = resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
-    if (missingRepoTag(route, task))
+    const cwd = cwdOverride ?? resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
+    if (!cwdOverride && missingRepoTag(route, task))
       console.warn(`⚠ no repo: tag on "${task.title}" — running in ${cwd}`);
     const child = spawn(route.command, cmdArgs, { cwd, env: process.env });
     let out = "";
@@ -117,27 +120,25 @@ function runCommand(route, task) {
   });
 }
 
-// Run the agent (edits only), then the dispatcher itself branches, commits,
-// pushes, and opens the PR — so a finished task is already a reviewable PR.
+// Run the agent (edits only) in an isolated worktree, then the dispatcher itself
+// commits, pushes, and opens the PR — so a finished task is already a reviewable
+// PR and concurrent same-repo tasks never collide.
 async function runWithPr(route, runTask, task) {
-  const cwd = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
+  const repo = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
   const branch = branchName(task);
 
-  const pf = await preflight(cwd);
-  if (!pf.ok) return { result: `PR aborted: ${pf.error}`, error: true };
-
-  const created = await startBranch(cwd, branch);
-  if (!created.ok) return { result: `PR aborted: couldn't create branch ${branch}: ${created.error}`, error: true };
+  const wt = await createWorktree(repo, branch, task.id);
+  if (wt.error) return { result: `PR aborted: ${wt.error}`, error: true };
 
   try {
-    const agent = await runCommand(route, runTask);
-    const fin = await finishPr(cwd, { branch, base: pf.base, title: task.title });
+    const agent = await runCommand(route, runTask, wt.path);
+    const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
     if (fin.error) return { result: `${agent.result}\n\n⚠ PR step failed: ${fin.error}`, error: true };
     if (fin.noChanges) return { result: `${agent.result}\n\n(no file changes — no PR opened)`, error: agent.error };
     console.log(`  ↳ opened PR ${fin.url}`);
     return { result: `${agent.result}\n\nBOARD_PR: ${fin.url}`, error: agent.error };
   } finally {
-    await restore(cwd, pf.base);
+    await removeWorktree(repo, wt.path);
   }
 }
 
@@ -146,7 +147,8 @@ function dryRunPreview(route, runTask, opensPr) {
   const cwd = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
   const cmd = `${route.command} ${(route.args || []).map((a) => fill(a, runTask)).join(" ")}`;
   let preview = `[dry-run] would run:\n(cwd: ${cwd})\n${cmd}`;
-  if (opensPr) preview += `\nthen: git checkout -b ${branchName(runTask)} → commit → push → gh pr create --fill`;
+  if (opensPr)
+    preview += `\nthen: worktree ${branchName(runTask)} → commit → push → gh pr create --fill`;
   return preview;
 }
 
@@ -184,37 +186,71 @@ async function processTask(task) {
   await notify(`${head}${prLine}\n\n${snippet}\n\n(in Review for your approval)`);
 }
 
-async function main() {
-  console.log(
-    `dispatcher up · ${EXECUTE ? "EXECUTE" : "dry-run"} · worker=${WORKER}` +
-      `${AGENT_FILTER ? ` · agent=${AGENT_FILTER}` : ""}` +
-      `${telegramEnabled() && CHAT_ID ? " · telegram on" : ""}`,
-  );
-  for (;;) {
-    let task = null;
+async function claim() {
+  try {
+    return await claimNext({ worker: WORKER, agent: AGENT_FILTER });
+  } catch (e) {
+    console.error("claim error:", e.message);
+    return null;
+  }
+}
+
+async function safeProcess(task) {
+  try {
+    await processTask(task);
+  } catch (e) {
+    console.error("process error:", e.message);
     try {
-      task = await claimNext({ worker: WORKER, agent: AGENT_FILTER });
-    } catch (e) {
-      console.error("claim error:", e.message);
-      await sleep(INTERVAL);
-      continue;
+      await reportResult(task.id, { result: `Dispatcher error: ${e.message}`, error: true });
+    } catch {
+      /* board unreachable */
     }
+  }
+}
+
+// One task at a time: claim → run → repeat.
+async function runSequential() {
+  for (;;) {
+    const task = await claim();
     if (!task) {
       if (ONCE) break;
       await sleep(INTERVAL);
       continue;
     }
-    try {
-      await processTask(task);
-    } catch (e) {
-      console.error("process error:", e.message);
-      try {
-        await reportResult(task.id, { result: `Dispatcher error: ${e.message}`, error: true });
-      } catch {
-        /* board unreachable */
-      }
-    }
+    await safeProcess(task);
   }
+}
+
+// Up to CONCURRENCY tasks at once. Safe because each PR task runs in its own
+// worktree (lib/git.mjs), so same-repo tasks don't share a working tree.
+async function runPool() {
+  const inflight = new Set();
+  for (;;) {
+    while (inflight.size < CONCURRENCY) {
+      const task = await claim();
+      if (!task) break;
+      const p = safeProcess(task).finally(() => inflight.delete(p));
+      inflight.add(p);
+    }
+    if (inflight.size === 0) {
+      if (ONCE) break;
+      await sleep(INTERVAL);
+      continue;
+    }
+    await Promise.race([...inflight, sleep(INTERVAL)]);
+  }
+  await Promise.allSettled([...inflight]);
+}
+
+async function main() {
+  console.log(
+    `dispatcher up · ${EXECUTE ? "EXECUTE" : "dry-run"} · worker=${WORKER}` +
+      `${CONCURRENCY > 1 ? ` · concurrency=${CONCURRENCY}` : ""}` +
+      `${AGENT_FILTER ? ` · agent=${AGENT_FILTER}` : ""}` +
+      `${telegramEnabled() && CHAT_ID ? " · telegram on" : ""}`,
+  );
+  if (CONCURRENCY > 1) await runPool();
+  else await runSequential();
 }
 
 main().catch((e) => {

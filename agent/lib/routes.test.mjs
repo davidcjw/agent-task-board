@@ -7,6 +7,7 @@ import {
   resolveCwd,
   resolveRepoPath,
   shouldOpenPr,
+  worktreePath,
 } from "./routes.mjs";
 
 const BASE = "/home/me/code";
@@ -124,5 +125,21 @@ describe("implementPrompt", () => {
     const out = implementPrompt("add a favicon");
     expect(out).toMatch(/do NOT commit, push, or open a pull request/i);
     expect(out.endsWith("Task: add a favicon")).toBe(true);
+  });
+});
+
+describe("worktreePath", () => {
+  it("places the worktree under the base dir, named by repo + id", () => {
+    expect(worktreePath("/tmp/wt", "/home/me/code/the-chronicle-v2", "abc123")).toBe(
+      "/tmp/wt/the-chronicle-v2-abc123",
+    );
+  });
+
+  it("ignores a trailing slash on the repo path", () => {
+    expect(worktreePath("/tmp/wt", "/home/me/code/my-app/", "x")).toBe("/tmp/wt/my-app-x");
+  });
+
+  it("falls back to 'repo' when the repo path is empty", () => {
+    expect(worktreePath("/tmp/wt", "", "x")).toBe("/tmp/wt/repo-x");
   });
 });

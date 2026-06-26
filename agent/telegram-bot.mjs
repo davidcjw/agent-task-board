@@ -10,6 +10,8 @@
 //   /id    → replies with this chat's id (set it as TELEGRAM_CHAT_ID for dispatcher notifications)
 //
 // Requires: TELEGRAM_BOT_TOKEN. Run the board (npm run dev) first.
+// Auth: only chats in ALLOWED_CHAT_IDS (comma-separated) — or TELEGRAM_CHAT_ID
+// if that's unset — may queue tasks. Set neither only on a trusted network.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -24,6 +26,25 @@ if (!telegramEnabled()) {
 }
 
 const OFFSET_FILE = path.join(process.cwd(), ".data", "tg-offset");
+
+// Sender allowlist. Anyone can find a bot by its username, so the inbound side
+// only queues tasks from chats we trust: ALLOWED_CHAT_IDS (comma-separated)
+// falling back to TELEGRAM_CHAT_ID (the chat the dispatcher already notifies).
+// When neither is set we stay open — documented local/trusted-network mode, the
+// same posture as the worker endpoints' AGENT_TOKEN — but warn loudly so an
+// exposed bot doesn't silently accept the world.
+const ALLOWED_CHATS = new Set(
+  (process.env.ALLOWED_CHAT_IDS || process.env.TELEGRAM_CHAT_ID || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+if (ALLOWED_CHATS.size === 0) {
+  console.warn(
+    "⚠️  No ALLOWED_CHAT_IDS / TELEGRAM_CHAT_ID set — the bot will queue tasks from ANY chat. Set one to lock it down.",
+  );
+}
+const isAllowed = (chatId) => ALLOWED_CHATS.size === 0 || ALLOWED_CHATS.has(String(chatId));
 
 function loadOffset() {
   try {
@@ -54,7 +75,14 @@ async function handle(message) {
     return;
   }
   if (text === "/id") {
+    // Always answerable so a trusted user can discover the id to allowlist.
     await sendMessage(chatId, `This chat id: ${chatId}`);
+    return;
+  }
+
+  if (!isAllowed(chatId)) {
+    await sendMessage(chatId, "🚫 Not authorized to queue tasks on this board.");
+    console.warn(`rejected message from chat ${chatId}`);
     return;
   }
 

@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-91%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-110%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -133,7 +133,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 91 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR helpers
+npm run test       # 110 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build

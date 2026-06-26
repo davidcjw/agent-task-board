@@ -35,6 +35,16 @@ const RUN_TELEGRAM = !NO_TELEGRAM && Boolean(process.env.TELEGRAM_BOT_TOKEN);
 
 const BOARD_URL = (process.env.BOARD_URL || "http://localhost:3000").replace(/\/$/, "");
 const READY_URL = `${BOARD_URL}/api/board`;
+// BOARD_URL is the single source of truth: bind the board to its port too, so
+// `BOARD_URL=http://localhost:3738` actually starts Next on 3738 (not the 3000
+// default). Falls back to 3000 when the url has no explicit port.
+const BOARD_PORT = (() => {
+  try {
+    return new URL(BOARD_URL).port || "3000";
+  } catch {
+    return "3000";
+  }
+})();
 
 // --- pretty, labelled output ----------------------------------------------
 const COLORS = { board: 36, dispatch: 33, watcher: 34, telegram: 35, sys: 32 };
@@ -122,7 +132,10 @@ async function main() {
   if (!NO_BOARD) {
     const nextBin = path.join(process.cwd(), "node_modules", ".bin", "next");
     sys(`starting board (next ${PROD ? "start" : "dev"}, api mode) → ${BOARD_URL}`);
-    start("board", nextBin, [PROD ? "start" : "dev"], { ...process.env, NEXT_PUBLIC_BOARD_MODE: "api" });
+    start("board", nextBin, [PROD ? "start" : "dev", "-p", BOARD_PORT], {
+      ...process.env,
+      NEXT_PUBLIC_BOARD_MODE: "api",
+    });
   } else {
     sys(`attaching to existing board at ${BOARD_URL}`);
   }

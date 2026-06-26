@@ -31,7 +31,7 @@ const SPECS: SeedSpec[] = [
     title: "Write Playwright e2e for checkout",
     prompt:
       "Add a Playwright end-to-end test covering the full checkout flow: add to cart → enter shipping → pay with the Stripe test card → assert the confirmation page. Use the existing test fixtures in tests/fixtures.",
-    agent: "Cursor",
+    agent: "Claude Code",
     tags: ["testing", "frontend"],
     notes: "",
     status: "queued",
@@ -74,7 +74,7 @@ const SPECS: SeedSpec[] = [
     title: "Add dark-mode toggle to settings",
     prompt:
       "Implement a dark-mode toggle in the settings page. Persist the choice to localStorage, respect prefers-color-scheme on first load, and avoid a flash of the wrong theme.",
-    agent: "Cursor",
+    agent: "Claude Code",
     tags: ["frontend", "feature"],
     notes: "Reviewed the diff — needs a no-flash inline script in <head>.",
     status: "review",
@@ -97,7 +97,7 @@ const SPECS: SeedSpec[] = [
     title: "Document the deploy runbook",
     prompt:
       "Write a DEPLOY.md runbook covering: env vars required, the build command, the rollback procedure, and how to tail production logs. Keep it skimmable with a checklist at the top.",
-    agent: "Claude (web)",
+    agent: "Claude Code",
     tags: ["docs"],
     notes: "Merged.",
     status: "done",

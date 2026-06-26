@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-32%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-91%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -49,9 +49,11 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Drag-and-drop** — reorder within a lane or move across lanes (pointer + full keyboard support via dnd-kit).
 - **Move buttons** — `‹ ›` on every card for quick, touch-friendly lane changes.
 - **Live timers** — Running cards tick up in real time; Done cards show how long the work took (tabular figures, no jitter).
+- **PR-aware cards** — when a task opens a pull request, the card surfaces a one-click **PR link** field; result text is expandable (show more/less) with clickable links.
+- **Compact Done lane + archive** — Done cards collapse to a one-line summary; **archive** finished cards behind a per-lane reveal (with restore) so the board never bloats.
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
 - **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
-- **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks and routes them to the right runner, a **Telegram bot** as your control surface, and results posted back into Review. See [Agent orchestration](#agent-orchestration).
+- **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks (with optional **concurrency**), routes each by `agent` label and a `repo:` tag to the right repo, and — for code tasks — opens a **pull request automatically** in an isolated `git worktree` before the card lands in Review. A **Telegram bot** is your control surface. See [Agent orchestration](#agent-orchestration).
 - **Export / Import** — back up or move your board as a JSON file.
 - **Undo** — deletes and board-clears are undoable from a toast.
 - **Keyboard shortcuts** — `n` to add a task, `/` to focus search, `⌘↵` to save, `Esc` to close.
@@ -122,8 +124,8 @@ agent/
   merge-watcher.mjs Move Review → Done when a card's PR is merged (polls `gh`)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
-  launchd/          macOS LaunchAgent installer (run the dispatcher persistently)
-  lib/              api.mjs (board client), telegram.mjs, prs.mjs (PR helpers)
+  launchd/          macOS LaunchAgent installer (run the whole control plane persistently)
+  lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), message.mjs
 ```
 
 `BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly. The same pure reducer in `board.ts` backs both the browser (`localEngine`) and the server store, so the local and live boards behave identically.
@@ -131,7 +133,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 45 unit tests: reducer, claim/result, storage, time, server store
+npm run test       # 91 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR helpers
 npm run typecheck
 npm run lint
 npm run build
@@ -169,20 +171,21 @@ Beyond the manual board, Agent Task Board can run a full **delegate → dispatch
 **One command** — bring up the board (in `api` mode) and the dispatcher, with labelled output and a clean Ctrl-C that stops everything:
 
 ```bash
-npm run agents                    # board + dispatcher (dry-run) + merge-watcher; no built-in bot
-npm run agents -- --execute       # let the dispatcher actually run runners
-npm run agents -- --telegram      # also run the built-in inbound bot (needs a token)
+npm run agents                    # board + dispatcher (dry-run) + merge-watcher + inbound bot
+npm run agents -- --execute       # let the dispatcher actually run runners + open PRs
+npm run agents -- --concurrency 3 # run up to 3 tasks at once (each PR task is worktree-isolated)
+npm run agents -- --no-telegram   # don't run the built-in inbound bot
 npm run agents -- --prod          # serve a production build (run `npm run build` first)
 npm run agents -- --no-board      # attach to an already-running board (BOARD_URL)
 npm run agents -- --no-watcher    # don't run the merge-watcher
 ```
 
-> The built-in inbound bot is **off by default** — use an external front door (e.g. [hans / telegram-claude-agent](#wiring-it-to-an-existing-telegram-agent)) and the dispatcher still posts results to your chat. Only pass `--telegram` if you want the bundled bot instead — and never run both pollers on one token (Telegram `409 Conflict`).
+> The built-in inbound bot is **auto-on whenever `TELEGRAM_BOT_TOKEN` is set** — every message becomes a queued task. Pass `--no-telegram` to disable it (do that when an external front door like [hans / telegram-claude-agent](#wiring-it-to-an-existing-telegram-agent) owns inbound **on the same bot** — two pollers on one token `409`; give the board its own bot token to run both). `BOARD_URL` is the single port knob: set it to e.g. `http://localhost:3738` and the board binds that port.
 
-**Run persistently (macOS)** — keep the dispatcher alive across logins and crashes with a LaunchAgent. It runs only the dispatcher, so keep a board up (`npm run agents`) for it to claim work; logs land in `.data/dispatcher.{out,err}.log`:
+**Run persistently (macOS)** — keep the **whole control plane** (board + dispatcher + watcher + bot) alive across logins and crashes with a LaunchAgent; it provides its own board, so nothing else need run (don't also `npm run agents` by hand — two boards clash on the port). Logs land in `.data/controlplane.{out,err}.log`:
 
 ```bash
-npm run agents:install            # dry-run; add `-- --execute` to run runners
+npm run agents:install            # dry-run; add `-- --execute --prod` to run runners off a prod build
 npm run agents:uninstall
 ```
 
@@ -228,25 +231,26 @@ The dispatcher routes each claimed task to a runner by its `agent` label using [
 
 ```json
 {
-  "default":     { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "." },
-  "Claude Code": { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "." }
+  "default":     { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "{repo}", "pr": true },
+  "Claude Code": { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "{repo}", "pr": true },
+  "knowledge-base": { "command": "claude", "args": ["-p", "{prompt}", "--agent", "knowledge-base"], "cwd": "." }
 }
 ```
 
-Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text).
+Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text). A `cwd` of `"{repo}"` makes **one route serve every repo**: a task tagged `repo:<name>` (e.g. `#repo:my-app` from Telegram) runs in `<AGENT_REPO_BASE>/<name>` (default `~/code`). Code routes set `"pr": true` to open a PR automatically (see below); subagent routes use `claude --agent <name>` and a literal `cwd`.
 
 > ⚠️ **Safety:** the dispatcher is **dry-run by default** — it reports the command it *would* run and touches nothing. Pass `--execute` (or `AGENT_EXECUTE=1`) only when you're ready for agents to run commands and edit repos on your machine. Results always land in **Review** for your approval, never straight to Done.
 
-### Auto-Done on merge (the `commit-push` flow)
+### Pull request by default, then auto-Done on merge
 
-The bundled **`commit-push`** route tells the runner to work on a branch, push, and open a PR (`gh pr create --fill`), ending its output with `BOARD_PR: <url>`. So a single Telegram message can turn into a pull request:
+Any **code route** (`"pr": true`) acting on a **`repo:`-tagged** task opens a PR automatically — the old `commit-push` label is folded in, so you don't need a special label. The flow is **dispatcher-driven and isolated**: the agent only edits files, then the dispatcher itself runs the task in its own `git worktree` (branch `atb/<id>`, under `AGENT_WORKTREE_DIR`), commits, pushes, and runs `gh pr create --fill`. Because each task gets its own worktree, your main checkout is never touched and concurrent tasks (`--concurrency N`) — even on the same repo — never collide. The worktree is hydrated with a `node_modules` symlink + copied `.env` so builds/tests still work.
 
-> *"[commit-push] add a /health endpoint that returns 200 OK"* → branch `atb/<id>` → PR opened → card sits in **Review** with the PR link.
+> *"[Claude Code] add a /health endpoint that returns 200 OK #repo:my-app"* → worktree on `atb/<id>` → PR opened → card sits in **Review** with a one-click PR link.
 
 The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) then polls every PR found on a Review card via `gh`, and moves the card to **Done** the moment that PR is merged — and pings Telegram *"🎉 merged → Done"*. So **merging the PR to master is the approval**; you never touch the board. Detection is detached from how the card was created — any Review card whose result contains a `github.com/.../pull/N` url is watched.
 
 - Set the poll interval in `.env` via **`WATCHER_INTERVAL`** (ms, default `30000`), or `npm run watcher -- --interval 60000`.
-- Point `commit-push`'s `cwd` at the repo you actually want changed (the example uses `.`), and make sure `gh` is authenticated there.
+- Tag the task with the repo you want changed (`#repo:<name>` → `<AGENT_REPO_BASE>/<name>`), and make sure `gh` is authenticated there.
 
 ### MCP & Telegram
 

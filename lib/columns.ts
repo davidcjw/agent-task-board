@@ -61,14 +61,14 @@ export const COLUMN_META: Record<Status, ColumnMeta> = {
   },
 };
 
-/** Common agent suggestions for the datalist (free text, not enforced). */
+/**
+ * Agent suggestions for the datalist (free text, not enforced).
+ * These mirror the routes wired up in `agent/routes.json` — keep them in sync
+ * so the dropdown reflects agents that actually have a runner.
+ */
 export const AGENT_SUGGESTIONS = [
   "Claude Code",
-  "Claude (web)",
-  "Cursor",
-  "Codex CLI",
-  "Aider",
-  "GitHub Copilot",
-  "Devin",
-  "Windsurf",
+  "knowledge-base",
+  "course-admin",
+  "renovation-advisor",
 ];

@@ -189,6 +189,17 @@ npm run agents:install            # dry-run; add `-- --execute --prod` to run ru
 npm run agents:uninstall
 ```
 
+Once installed, manage it with `launchctl` (label `com.davidcjw.agent-task-board.controlplane`) — no reinstall needed:
+
+```bash
+LABEL=com.davidcjw.agent-task-board.controlplane
+launchctl print "gui/$(id -u)/$LABEL" | grep -E "state =|pid ="    # status (running? pid?)
+launchctl kickstart -k "gui/$(id -u)/$LABEL"                       # restart in place
+launchctl bootout "gui/$(id -u)/$LABEL"                            # stop (KeepAlive won't auto-revive a manual bootout)
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/$LABEL.plist   # start again from the installed plist
+tail -f .data/controlplane.out.log .data/controlplane.err.log     # follow logs
+```
+
 **Or run the pieces by hand:**
 
 ```bash

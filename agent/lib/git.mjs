@@ -103,10 +103,15 @@ export async function createWorktree(repo, branch, id) {
  * Runs inside the worktree. Returns { url } | { noChanges: true } | { error }.
  */
 export async function finishPr(wt, { branch, base, title }) {
-  const dirty = await run("git", ["status", "--porcelain"], wt);
-  if (dirty.out) {
-    const add = await run("git", ["add", "-A"], wt);
-    if (add.code !== 0) return { error: `git add failed: ${add.err || add.out}` };
+  const add = await run("git", ["add", "-A"], wt);
+  if (add.code !== 0) return { error: `git add failed: ${add.err || add.out}` };
+  // Unstage the worktree-hydration artifacts so they never land in the PR: the
+  // node_modules symlink slips past a `node_modules/` (dir-only) .gitignore rule
+  // because git treats a symlink as a non-directory, and a copied .env would leak
+  // if the repo doesn't ignore it. Resetting unstaged paths is a harmless no-op.
+  await run("git", ["reset", "-q", "--", "node_modules", ".env", ".env.local"], wt);
+  const staged = await run("git", ["diff", "--cached", "--name-only"], wt);
+  if (staged.out) {
     const commit = await run("git", ["commit", "-m", title || "agent task"], wt);
     if (commit.code !== 0) return { error: `git commit failed: ${commit.err || commit.out}` };
   }

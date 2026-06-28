@@ -54,7 +54,7 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Compact Done lane + archive** — Done cards collapse to a one-line summary; **archive** finished cards behind a per-lane reveal (with restore) so the board never bloats.
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
 - **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
-- **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks (with optional **concurrency**), routes each by `agent` label and a `repo:` tag to the right repo, and — for code tasks — opens a **pull request automatically** in an isolated `git worktree` before the card lands in Review. A **Telegram bot** is your control surface. See [Agent orchestration](#agent-orchestration).
+- **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks (with optional **concurrency**), routes each by `agent` label and a `/repo` slash command (or `repo:` tag) to the right repo, and — for code tasks — opens a **pull request automatically** in an isolated `git worktree` before the card lands in Review. A **Telegram bot** is your control surface. See [Agent orchestration](#agent-orchestration).
 - **Export / Import** — back up or move your board as a JSON file.
 - **Undo** — deletes and board-clears are undoable from a toast.
 - **Keyboard shortcuts** — `n` to add a task, `/` to focus search, `⌘↵` to save, `Esc` to close.
@@ -250,7 +250,7 @@ The dispatcher routes each claimed task to a runner by its `agent` label using [
 }
 ```
 
-Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text). A `cwd` of `"{repo}"` makes **one route serve every repo**: a task tagged `repo:<name>` (e.g. `#repo:my-app` from Telegram) runs in `<AGENT_REPO_BASE>/<name>` (default `~/code`). Code routes set `"pr": true` to open a PR automatically (see below); subagent routes use `claude --agent <name>` and a literal `cwd`.
+Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per task; commands run without a shell (safe with arbitrary prompt text). A `cwd` of `"{repo}"` makes **one route serve every repo**: a task tagged `repo:<name>` (set with the Telegram slash command `/my-app`, or a `#repo:my-app` tag) runs in `<AGENT_REPO_BASE>/<name>` (default `~/code`). Code routes set `"pr": true` to open a PR automatically (see below); subagent routes use `claude --agent <name>` and a literal `cwd`.
 
 > ⚠️ **Safety:** the dispatcher is **dry-run by default** — it reports the command it *would* run and touches nothing. Pass `--execute` (or `AGENT_EXECUTE=1`) only when you're ready for agents to run commands and edit repos on your machine. Results always land in **Review** for your approval, never straight to Done.
 
@@ -258,12 +258,12 @@ Placeholders `{prompt}` `{title}` `{id}` `{agent}` `{tags}` are substituted per 
 
 Any **code route** (`"pr": true`) acting on a **`repo:`-tagged** task opens a PR automatically — the old `commit-push` label is folded in, so you don't need a special label. The flow is **dispatcher-driven and isolated**: the agent only edits files, then the dispatcher itself runs the task in its own `git worktree` (branch `atb/<id>`, under `AGENT_WORKTREE_DIR`), commits, pushes, and runs `gh pr create --fill`. Because each task gets its own worktree, your main checkout is never touched and concurrent tasks (`--concurrency N`) — even on the same repo — never collide. The worktree is hydrated with a `node_modules` symlink + copied `.env` so builds/tests still work.
 
-> *"[Claude Code] add a /health endpoint that returns 200 OK #repo:my-app"* → worktree on `atb/<id>` → PR opened → card sits in **Review** with a one-click PR link.
+> Telegram: `/my-app add a health-check endpoint` → worktree on `atb/<id>` → PR opened → card sits in **Review** with a one-click PR link.
 
 The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) then polls every PR found on a Review card via `gh`, and moves the card to **Done** the moment that PR is merged — and pings Telegram *"🎉 merged → Done"*. So **merging the PR to master is the approval**; you never touch the board. Detection is detached from how the card was created — any Review card whose result contains a `github.com/.../pull/N` url is watched.
 
 - Set the poll interval in `.env` via **`WATCHER_INTERVAL`** (ms, default `30000`), or `npm run watcher -- --interval 60000`.
-- Tag the task with the repo you want changed (`#repo:<name>` → `<AGENT_REPO_BASE>/<name>`), and make sure `gh` is authenticated there.
+- Point the task at the repo you want changed — the Telegram slash command `/<name>` (or a `#repo:<name>` tag) maps to `<AGENT_REPO_BASE>/<name>` — and make sure `gh` is authenticated there.
 
 ### Independent review gate (opt-in)
 
@@ -303,7 +303,7 @@ Implementation lives in [`agent/lib/review.mjs`](agent/lib/review.mjs) (pure hel
 ### MCP & Telegram
 
 - **MCP server** (`agent/mcp-server.mjs`) exposes `add_task`, `list_tasks`, `get_board`, `claim_next`, `report_result`, `move_task`. Point Claude Desktop / Claude Code at it (`npm run mcp`) and queue work by talking to an agent. Config example is in the file header.
-- **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
+- **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. **Pick the repo a code task runs in with a slash command:** a leading `/<repo>` (e.g. `/my-app add a health endpoint`) targets one task, and `/use <repo>` sets a sticky default for the chat so plain messages inherit it (`/use` shows it, `/use off` clears it). The repo list is read straight from the folders under `AGENT_REPO_BASE` and registered as a `/`-autocomplete menu on startup — **create a new repo and it becomes a command automatically**, nothing to maintain (slugs match separator-insensitively, so `/democratizing_claude` resolves `democratizing-claude`). A `#repo:<name>` tag still works as a fallback; precedence is `/<repo>` > `#repo:` tag > sticky default. Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
 
 ### Wiring it to an existing Telegram agent
 

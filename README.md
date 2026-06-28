@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-110%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-133%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -50,6 +50,7 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Move buttons** — `‹ ›` on every card for quick, touch-friendly lane changes.
 - **Live timers** — Running cards tick up in real time; Done cards show how long the work took (tabular figures, no jitter).
 - **PR-aware cards** — when a task opens a pull request, the card surfaces a one-click **PR link** field; result text is expandable (show more/less) with clickable links.
+- **Independent review gate (opt-in)** — before a PR opens, a _fresh_ agent that didn't write the code reviews the diff alongside the repo's own checks (`lint`/`typecheck`/`test`) and iterates fixes until the change clears a confidence gate — so you only ever review PRs that already passed. See [Independent review gate](#independent-review-gate-opt-in).
 - **Compact Done lane + archive** — Done cards collapse to a one-line summary; **archive** finished cards behind a per-lane reveal (with restore) so the board never bloats.
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
 - **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
@@ -133,7 +134,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 110 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, Telegram message parsing
+npm run test       # 133 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, review-gate helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -243,7 +244,8 @@ The dispatcher routes each claimed task to a runner by its `agent` label using [
 ```json
 {
   "default":     { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "{repo}", "pr": true },
-  "Claude Code": { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "{repo}", "pr": true },
+  "Claude Code": { "command": "claude", "args": ["-p", "{prompt}", "--output-format", "json"], "cwd": "{repo}", "pr": true,
+                   "review": { "iterations": 2, "threshold": 95, "checks": ["lint", "typecheck", "test"] } },
   "knowledge-base": { "command": "claude", "args": ["-p", "{prompt}", "--agent", "knowledge-base"], "cwd": "." }
 }
 ```
@@ -262,6 +264,41 @@ The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) t
 
 - Set the poll interval in `.env` via **`WATCHER_INTERVAL`** (ms, default `30000`), or `npm run watcher -- --interval 60000`.
 - Tag the task with the repo you want changed (`#repo:<name>` → `<AGENT_REPO_BASE>/<name>`), and make sure `gh` is authenticated there.
+
+### Independent review gate (opt-in)
+
+Before a PR ever opens, the dispatcher can run an **independent review-and-fix loop inside the same worktree** — so the PRs that reach your Review lane have already cleared an automated check. A _fresh_ agent process (no context from the agent that wrote the code — genuinely independent, since each `claude -p` is one-shot) reviews the diff alongside **the repo's own checks**, and a fixer iterates until the change passes or a cap is hit.
+
+```
+implementer edits  →  [ loop: run checks → independent reviewer → fixer ]  →  open PR
+```
+
+**The gate passes only when all three hold:** the repo's checks are green **and** the reviewer reports zero blocking findings **and** its confidence ≥ the threshold. (The confidence number alone isn't trusted — an LLM's self-reported confidence isn't calibrated — so it's anchored to the hard signal of real `lint`/`typecheck`/`test` runs.) If the cap is reached without passing, **the PR still opens, but flagged** — the unresolved findings + confidence are folded into the card's result and the Telegram message shows `⚠ Flagged: … needs a closer human look.`
+
+**Turn it on** two ways (off by default, so existing routes are unchanged):
+
+```jsonc
+// per route in agent/routes.json — bare flag uses the defaults…
+"Claude Code": { "command": "claude", "args": [...], "cwd": "{repo}", "pr": true, "review": true }
+
+// …or tune the knobs:
+"Claude Code": { …, "review": { "iterations": 2, "threshold": 95, "checks": ["lint", "typecheck", "test"] } }
+```
+
+```bash
+# …or force it on for EVERY pr:true route, no routes.json edit:
+AGENT_REVIEW=1 npm run agents -- --execute     # AGENT_REVIEW=0 forces it off
+```
+
+| Knob | Default | Meaning |
+| --- | --- | --- |
+| `iterations` | `2` | Max **fix** rounds (so ≤ `iterations + 1` review passes) before opening a flagged PR |
+| `threshold` | `95` | Minimum reviewer confidence (%) to pass the gate |
+| `checks` | auto | Which `package.json` scripts to run; omit to auto-detect `lint`/`typecheck`/`test` (build excluded — too slow) |
+
+> **Cost:** each enabled task spawns up to `2 × (iterations + 1)` extra `claude` runs (reviewer + fixer per round) plus the check commands, so keep `iterations` modest. Review only runs for tasks that would open a PR (`pr: true` route + a `repo:` tag); plain questions and subagent tasks are never gated.
+
+Implementation lives in [`agent/lib/review.mjs`](agent/lib/review.mjs) (pure helpers unit-tested in `review.test.mjs`), wired into the PR flow in `agent/dispatcher.mjs`.
 
 ### MCP & Telegram
 

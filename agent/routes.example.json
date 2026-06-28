@@ -9,7 +9,8 @@
     "command": "claude",
     "args": ["-p", "{prompt}", "--output-format", "json", "--dangerously-skip-permissions"],
     "cwd": "{repo}",
-    "pr": true
+    "pr": true,
+    "review": { "iterations": 2, "threshold": 95, "checks": ["lint", "typecheck", "test"] }
   },
   "Cursor": {
     "command": "echo",

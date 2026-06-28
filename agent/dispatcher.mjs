@@ -20,6 +20,7 @@ import path from "node:path";
 import { claimNext, reportResult } from "./lib/api.mjs";
 import { createWorktree, finishPr, removeWorktree } from "./lib/git.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
+import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
 import {
   branchName,
   implementPrompt,
@@ -50,6 +51,10 @@ const AGENT_FILTER = val("--agent", "") || undefined;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 // Base dir for `repo:<name>` tags — a route's "{repo}" cwd resolves under here.
 const REPO_BASE = process.env.AGENT_REPO_BASE || path.join(os.homedir(), "code");
+// AGENT_REVIEW overrides the per-route `review` flag: "1" forces the pre-PR review
+// gate on for every PR route, "0" off, unset → leave it to each route.
+const REVIEW_FORCED =
+  process.env.AGENT_REVIEW === "1" ? true : process.env.AGENT_REVIEW === "0" ? false : undefined;
 
 const ROUTES = loadRoutes();
 
@@ -133,11 +138,25 @@ async function runWithPr(route, runTask, task) {
 
   try {
     const agent = await runCommand(route, runTask, wt.path);
+    // Independent pre-PR gate: a fresh reviewer + the repo's own checks iterate fixes
+    // (in this same worktree) until the change clears the 95% gate or the cap is hit;
+    // a flagged result still opens a PR, just marked for a closer human look.
+    let note = "";
+    if (shouldReview(route, task, REVIEW_FORCED)) {
+      const r = await reviewLoop({
+        route,
+        task,
+        wtPath: wt.path,
+        runCommand,
+        log: (m) => console.log(`  ↳ ${m}`),
+      });
+      if (r.summary) note = `\n\n${r.summary}`;
+    }
     const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
-    if (fin.error) return { result: `${agent.result}\n\n⚠ PR step failed: ${fin.error}`, error: true };
-    if (fin.noChanges) return { result: `${agent.result}\n\n(no file changes — no PR opened)`, error: agent.error };
+    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true };
+    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error };
     console.log(`  ↳ opened PR ${fin.url}`);
-    return { result: `${agent.result}\n\nBOARD_PR: ${fin.url}`, error: agent.error };
+    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error };
   } finally {
     await removeWorktree(repo, wt.path);
   }
@@ -148,8 +167,13 @@ function dryRunPreview(route, runTask, opensPr) {
   const cwd = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
   const cmd = `${route.command} ${(route.args || []).map((a) => fill(a, runTask)).join(" ")}`;
   let preview = `[dry-run] would run:\n(cwd: ${cwd})\n${cmd}`;
-  if (opensPr)
+  if (opensPr) {
+    if (shouldReview(route, runTask, REVIEW_FORCED)) {
+      const { iterations, threshold } = reviewConfig(route);
+      preview += `\nthen: review gate (≤${iterations + 1} passes, ${threshold}% + checks)`;
+    }
     preview += `\nthen: worktree ${branchName(runTask)} → commit → push → gh pr create --fill`;
+  }
   return preview;
 }
 

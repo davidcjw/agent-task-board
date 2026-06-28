@@ -14,15 +14,25 @@ import { worktreePath } from "./routes.mjs";
 
 const WORKTREE_BASE = process.env.AGENT_WORKTREE_DIR || path.join(os.tmpdir(), "atb-worktrees");
 
-function run(cmd, args, cwd) {
+// Shell out to git/gh (and, for the review gate, npm). Resolves { code, out, err }
+// and never rejects. `timeout` (ms) SIGKILLs a hung command — checks like
+// `npm test` can otherwise run forever. Exported so review.mjs reuses one runner.
+export function run(cmd, args, cwd, { timeout } = {}) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, env: process.env });
     let out = "";
     let err = "";
+    const timer = timeout ? setTimeout(() => child.kill("SIGKILL"), timeout) : null;
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve({ code: -1, out: out.trim(), err: e.message }));
-    child.on("close", (code) => resolve({ code, out: out.trim(), err: err.trim() }));
+    child.on("error", (e) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code: -1, out: out.trim(), err: e.message });
+    });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code, out: out.trim(), err: err.trim() });
+    });
   });
 }
 
@@ -131,6 +141,21 @@ export async function finishPr(wt, { branch, base, title }) {
   }
   if (!url) return { error: `gh pr create failed: ${create.err || create.out}` };
   return { url };
+}
+
+/**
+ * The diff of everything the agent changed in the worktree, for the review gate.
+ * Stages all changes (so new files show too), unstages the hydration artifacts the
+ * same way finishPr does (node_modules symlink + .env copies), then returns the
+ * cached diff capped to `maxBytes` so a huge change can't blow up the review prompt.
+ * Staging here is harmless — finishPr re-runs `git add -A` before committing.
+ */
+export async function worktreeDiff(wt, { maxBytes = 60000 } = {}) {
+  await run("git", ["add", "-A"], wt);
+  await run("git", ["reset", "-q", "--", "node_modules", ".env", ".env.local"], wt);
+  const diff = await run("git", ["diff", "--cached"], wt);
+  const text = diff.out || "";
+  return text.length > maxBytes ? `${text.slice(0, maxBytes)}\n… (diff truncated)` : text;
 }
 
 /** Tear down the task's worktree (best-effort), serialized per repo. */

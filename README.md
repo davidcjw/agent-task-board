@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-152%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-157%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -135,7 +135,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 152 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, review-gate helpers, scout scan/rank helpers, Telegram message parsing
+npm run test       # 157 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -300,6 +300,31 @@ AGENT_REVIEW=1 npm run agents -- --execute     # AGENT_REVIEW=0 forces it off
 > **Cost:** each enabled task spawns up to `2 × (iterations + 1)` extra `claude` runs (reviewer + fixer per round) plus the check commands, so keep `iterations` modest. Review only runs for tasks that would open a PR (`pr: true` route + a `repo:` tag); plain questions and subagent tasks are never gated.
 
 Implementation lives in [`agent/lib/review.mjs`](agent/lib/review.mjs) (pure helpers unit-tested in `review.test.mjs`), wired into the PR flow in `agent/dispatcher.mjs`.
+
+### Timeouts & failure handling
+
+Every runner the dispatcher spawns is bounded by **`AGENT_TIMEOUT`** (default `1200000` ms = **20 min**, per runner invocation). When a run overruns, the dispatcher **SIGKILLs** it. What happens next depends on *how* the run ended:
+
+| Scenario | What the dispatcher does | Where the card lands |
+| --- | --- | --- |
+| **Runner times out** (1st time) | **Auto-requeues once** — moves the card back to **Queued**, stamps an `auto-retry` tag, and pings Telegram `⏱ Timed out … auto-requeued`. For a PR task the half-finished worktree is **discarded (no PR opened)** so the retry starts clean. | **Queued** (re-attempted) |
+| **Runner times out** (2nd time) | The `auto-retry` tag makes requeue **one-shot** — a second timeout is not retried. | **Review**, flagged `❌` (human takes over) |
+| **Runner exits non-zero** (genuine failure) | No retry — a real error won't fix itself on a re-run. | **Review**, flagged `❌` |
+| **Runner can't start** (command missing, etc.) | No retry; the start error is the result. | **Review**, flagged `❌` |
+| **PR task, agent edited files** | Dispatcher commits → pushes → opens the PR. | **Review** with a 🔗 PR link → merge-watcher moves it to **Done** on merge |
+| **PR task, no diff produced** | No PR opened (`no file changes`). | **Review** / **Done** per the run's own error flag |
+| **Review gate enabled, cap reached unpassed** | PR **still opens, but flagged** (findings + confidence folded in). | **Review**, marked `⚠ Flagged` |
+| **Dispatcher throws unexpectedly** | `safeProcess` catches it and reports `Dispatcher error: …`. | **Review**, flagged `❌` |
+
+Key properties:
+
+- **One clean retry, never a loop.** A timeout gets exactly one fresh attempt; the `auto-retry` tag (pure decision in [`shouldRequeue`](agent/lib/routes.mjs), unit-tested) guarantees a second timeout escalates to a human instead of retrying forever.
+- **Timeouts don't leak partial PRs.** Because the PR flow bails *before* committing when the implementer times out, the retry branches fresh off the default branch with no remote branch to collide with.
+- **Only timeouts retry.** Genuine failures (non-zero exit, start errors) go straight to Review — re-running them would just waste another `AGENT_TIMEOUT`.
+- **The retry is FIFO-fair.** A requeued card keeps its original `createdAt`, so `claimNext` (oldest-first) picks it up next.
+- **Tune the budget** with `AGENT_TIMEOUT` in `.env`. A task that's *legitimately* longer than 20 min should get a bigger budget or be split — a single very long agent run is also more likely to wander.
+
+> Note: the review gate's reviewer/fixer runs and `npm run` checks have their **own** budgets (`AGENT_TIMEOUT` per `claude` run, `REVIEW_CHECK_TIMEOUT` per check, default 5 min), so a reviewed PR task's total wall-clock can exceed a single `AGENT_TIMEOUT`. Auto-requeue is scoped to the **implementer** run timing out, not the reviewer/fixer.
 
 ### Improvement scout (auto-fills the queue)
 

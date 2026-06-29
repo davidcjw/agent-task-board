@@ -37,6 +37,12 @@ export async function moveTask(id, status) {
   return data.task;
 }
 
+/** Patch arbitrary editable fields (status, tags, …) in one request. */
+export async function patchTask(id, patch) {
+  const data = await request("PATCH", `/api/tasks/${id}`, patch);
+  return data.task;
+}
+
 export async function claimNext({ agent, tag, worker } = {}) {
   const data = await request("POST", "/api/claim", { agent, tag, worker });
   return data.task; // may be null when the queue is empty

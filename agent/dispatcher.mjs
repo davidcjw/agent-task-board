@@ -17,11 +17,12 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { claimNext, reportResult } from "./lib/api.mjs";
+import { claimNext, patchTask, reportResult } from "./lib/api.mjs";
 import { createWorktree, finishPr, removeWorktree } from "./lib/git.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
 import {
+  AUTO_RETRY_TAG,
   branchName,
   implementPrompt,
   missingRepoTag,
@@ -29,6 +30,7 @@ import {
   resolveCwd,
   resultStatus,
   shouldOpenPr,
+  shouldRequeue,
 } from "./lib/routes.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
@@ -99,7 +101,11 @@ function runCommand(route, task, cwdOverride) {
     const child = spawn(route.command, cmdArgs, { cwd, env: process.env });
     let out = "";
     let err = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, TIMEOUT);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => {
@@ -120,8 +126,11 @@ function runCommand(route, task, cwdOverride) {
       } catch {
         /* not JSON — use raw stdout */
       }
-      if (!result) result = err.trim() || `(no output, exit ${code})`;
-      resolve({ result, error });
+      if (!result)
+        result =
+          err.trim() ||
+          (timedOut ? `(timed out after ${Math.round(TIMEOUT / 60000)}m)` : `(no output, exit ${code})`);
+      resolve({ result, error, timedOut });
     });
   });
 }
@@ -138,6 +147,11 @@ async function runWithPr(route, runTask, task) {
 
   try {
     const agent = await runCommand(route, runTask, wt.path);
+    // If the agent hit the kill-timeout, don't commit its half-finished edits into a
+    // PR. Bail out (the worktree is torn down in `finally`, so nothing is pushed) and
+    // let processTask auto-requeue a clean attempt — a fresh run can't collide with a
+    // partial remote branch that never existed.
+    if (agent.timedOut) return { result: agent.result, error: true, timedOut: true };
     // Independent pre-PR gate: a fresh reviewer + the repo's own checks iterate fixes
     // (in this same worktree) until the change clears the 95% gate or the cap is hit;
     // a flagged result still opens a PR, just marked for a closer human look.
@@ -197,6 +211,17 @@ async function processTask(task) {
     outcome = await runWithPr(route, runTask, task);
   } else {
     outcome = await runCommand(route, runTask);
+  }
+
+  // Auto-requeue once on timeout: rather than parking a slow task in Review, give
+  // it one clean re-attempt. The AUTO_RETRY_TAG makes it one-shot — a second
+  // timeout falls through to the normal Review path below for a human to take over.
+  if (shouldRequeue({ execute: EXECUTE, timedOut: outcome.timedOut, tags: task.tags })) {
+    const mins = Math.round(TIMEOUT / 60000);
+    await patchTask(task.id, { status: "queued", tags: [...(task.tags || []), AUTO_RETRY_TAG] });
+    console.log(`⏱ "${task.title}" timed out after ${mins}m → auto-requeued (one retry)`);
+    await notify(`⏱ Timed out "${task.title}" after ${mins}m\n→ auto-requeued for one more attempt`);
+    return;
   }
 
   // A task that opened no PR (a question, info/subagent work, or a no-diff run)

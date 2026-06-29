@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-133%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-152%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -123,10 +123,11 @@ agent/
   launch.mjs        One command: board + dispatcher + watcher (`npm run agents`)
   dispatcher.mjs    Claim → route by agent → run → report (to board + Telegram)
   merge-watcher.mjs Move Review → Done when a card's PR is merged (polls `gh`)
+  scout.mjs         Improvement scout: scan ~/code, rank ideas, queue the single best (`npm run scout`)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
-  launchd/          macOS LaunchAgent installer (run the whole control plane persistently)
-  lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), message.mjs
+  launchd/          macOS LaunchAgent installers: whole control plane (persistent) + scout (daily 10pm)
+  lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), scout.mjs (scan/rank helpers), message.mjs
 ```
 
 `BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly. The same pure reducer in `board.ts` backs both the browser (`localEngine`) and the server store, so the local and live boards behave identically.
@@ -134,7 +135,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 133 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, review-gate helpers, Telegram message parsing
+npm run test       # 152 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug helpers, review-gate helpers, scout scan/rank helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -190,7 +191,7 @@ npm run agents:install            # dry-run; add `-- --execute --prod` to run ru
 npm run agents:uninstall
 ```
 
-Once installed, manage it with `launchctl` (label `com.davidcjw.agent-task-board.controlplane`) — no reinstall needed:
+Once installed, manage it with `launchctl` (label `com.davidcjw.agent-task-board.controlplane`) — no reinstall needed. `kickstart`/`bootout`/`bootstrap`/`print` are **subcommands of the built-in `/bin/launchctl`**, not separate binaries (`launchctl kickstart …`, not a `kickstart` on your `PATH`):
 
 ```bash
 LABEL=com.davidcjw.agent-task-board.controlplane
@@ -299,6 +300,38 @@ AGENT_REVIEW=1 npm run agents -- --execute     # AGENT_REVIEW=0 forces it off
 > **Cost:** each enabled task spawns up to `2 × (iterations + 1)` extra `claude` runs (reviewer + fixer per round) plus the check commands, so keep `iterations` modest. Review only runs for tasks that would open a PR (`pr: true` route + a `repo:` tag); plain questions and subagent tasks are never gated.
 
 Implementation lives in [`agent/lib/review.mjs`](agent/lib/review.mjs) (pure helpers unit-tested in `review.test.mjs`), wired into the PR flow in `agent/dispatcher.mjs`.
+
+### Improvement scout (auto-fills the queue)
+
+The dispatcher *consumes* tasks; the **scout** (`agent/scout.mjs`, `npm run scout`) *produces* them. Once a day it scans **every repo under `AGENT_REPO_BASE` (~/code)** for high-leverage improvements — infra, dev tooling, features, fixes, docs, even a brand-new project when the win is big — then queues **only the single best one** for the dispatcher to pick up. You wake up to one well-chosen PR in **Review**, not a backlog of suggestions.
+
+```
+scan ~/code  →  brainstorm + score EVERY idea  →  rank by ICE  →  queue only #1  →  dispatcher → PR → Review
+```
+
+It runs a fresh `claude -p` over the workspace and asks it to score each idea on three 1–10 axes — **impact**, **confidence**, **ease** — but **the ranking is computed in code, not taken from the model**: `score = impact × confidence × ease` (the classic ICE score), so it's deterministic and reproducible. The winner becomes a task three ways:
+
+- **Existing repo** (the idea's `repo` matches a folder under `~/code`, separator-insensitively) → a `repo:<name>` tag, so it flows through the normal **worktree → PR → Review** path.
+- **New project** (`category: new-project`) → a prompt that scaffolds a fresh `~/code/<slug>` (with `git init`); no PR, lands in **Done** for you to inspect.
+- **Cross-repo / workspace** idea → runs against the whole workspace; no PR.
+
+Every scout task carries a `scout` tag for provenance.
+
+```bash
+npm run scout                 # scan → rank → queue the top idea (board must be up to accept it)
+npm run scout -- --dry-run    # scan → rank → print the ranking + task input, push nothing
+npm run scout -- --print-prompt   # dump the scan prompt and exit (no model call)
+```
+
+**Run it at 10pm automatically** with a one-shot LaunchAgent (macOS):
+
+```bash
+npm run scout:install                    # fires daily at 22:00
+npm run scout:install -- --hour 21 --minute 30   # retime it
+npm run scout:uninstall                  # remove it
+```
+
+The scout runs no board of its own — it POSTs the queued task to whatever board is already up, so keep the control plane running (`npm run agents:install`) for the 10pm push to land. Pure scan/rank helpers are unit-tested in [`agent/lib/scout.test.mjs`](agent/lib/scout.test.mjs); env knobs: `SCOUT_MODEL`, `SCOUT_TIMEOUT` (ms, default 30 min). 
 
 ### MCP & Telegram
 

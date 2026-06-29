@@ -67,6 +67,22 @@ export function resultStatus({ execute, error, prOpened }) {
   return "done";
 }
 
+/**
+ * Tag the dispatcher stamps on a task when it auto-requeues it after a timeout.
+ * Its presence makes the retry one-shot — a second timeout won't requeue again.
+ */
+export const AUTO_RETRY_TAG = "auto-retry";
+
+/**
+ * Should a timed-out task be auto-requeued for one more attempt? Only when we're
+ * actually executing, the runner hit the kill-timeout, and the task hasn't
+ * already been auto-retried — so a second timeout falls through to the normal
+ * Review path for a human to take over.
+ */
+export function shouldRequeue({ execute, timedOut, tags }) {
+  return Boolean(execute && timedOut && !(tags || []).includes(AUTO_RETRY_TAG));
+}
+
 /** The branch the dispatcher opens a task's PR from. */
 export function branchName(task) {
   return `atb/${task && task.id}`;

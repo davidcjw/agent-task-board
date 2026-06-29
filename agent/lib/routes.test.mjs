@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTO_RETRY_TAG,
   branchName,
   implementPrompt,
   matchRepoSlug,
@@ -11,6 +12,7 @@ import {
   resolveRepoPath,
   resultStatus,
   shouldOpenPr,
+  shouldRequeue,
   worktreePath,
 } from "./routes.mjs";
 
@@ -133,6 +135,28 @@ describe("resultStatus", () => {
 
   it("keeps dry-run previews in Review (nothing actually ran)", () => {
     expect(resultStatus({ execute: false, error: false, prOpened: false })).toBe("review");
+  });
+});
+
+describe("shouldRequeue", () => {
+  it("requeues a timed-out task that hasn't been retried yet", () => {
+    expect(shouldRequeue({ execute: true, timedOut: true, tags: ["repo:my-app"] })).toBe(true);
+  });
+
+  it("does not requeue when the runner finished in time", () => {
+    expect(shouldRequeue({ execute: true, timedOut: false, tags: [] })).toBe(false);
+  });
+
+  it("is one-shot: a task already carrying the auto-retry tag is not requeued again", () => {
+    expect(shouldRequeue({ execute: true, timedOut: true, tags: [AUTO_RETRY_TAG] })).toBe(false);
+  });
+
+  it("never requeues in dry-run (nothing actually ran)", () => {
+    expect(shouldRequeue({ execute: false, timedOut: true, tags: [] })).toBe(false);
+  });
+
+  it("tolerates missing tags", () => {
+    expect(shouldRequeue({ execute: true, timedOut: true, tags: undefined })).toBe(true);
   });
 });
 

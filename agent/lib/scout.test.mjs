@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   iceScore,
+  ideaKey,
   ideaToTask,
+  mergeBacklog,
   NEW_PROJECT_TAG,
   parseCallback,
   parseScout,
@@ -149,6 +151,69 @@ describe("ideaToTask", () => {
     expect(task.prompt).toContain("/home/x/code");
     expect(task.prompt).toContain("init each folder");
     expect(task.prompt).not.toContain("brand-new project");
+  });
+});
+
+describe("ideaKey", () => {
+  it("is separator- and case-insensitive on repo, and slugs the title", () => {
+    expect(ideaKey({ repo: "democratizing_claude", title: "Speed up tests" })).toBe("democratizingclaude::speed-up-tests");
+    expect(ideaKey({ repo: "Democratizing-Claude", title: "speed up tests!" })).toBe(
+      "democratizingclaude::speed-up-tests",
+    );
+  });
+  it("collapses near-duplicate phrasings to the same key", () => {
+    expect(ideaKey({ repo: "app", title: "Add CI cache" })).toBe(ideaKey({ repo: "app", title: "add  ci   cache" }));
+  });
+  it("handles missing fields", () => {
+    expect(ideaKey({})).toBe("::");
+    expect(ideaKey(null)).toBe("::");
+  });
+});
+
+describe("mergeBacklog", () => {
+  const idea = (title, repo, score) => ({ title, repo, prompt: "p", impact: score, confidence: 10, ease: 10 });
+
+  it("ranks fresh + kept ideas together, best-first, and stamps a key", () => {
+    const backlog = [idea("old-strong", "a", 9)];
+    const fresh = [idea("new-weak", "b", 2)];
+    const out = mergeBacklog(backlog, fresh, {});
+    expect(out.map((i) => i.title)).toEqual(["old-strong", "new-weak"]);
+    expect(out[0].key).toBe(ideaKey(out[0]));
+  });
+
+  it("drops backlog ideas for a just-scanned repo (fresh supersedes stale)", () => {
+    const backlog = [idea("stale", "app", 9)];
+    const fresh = [idea("fresh", "app", 3)];
+    const out = mergeBacklog(backlog, fresh, { scannedKeys: new Set(["app"]) });
+    expect(out.map((i) => i.title)).toEqual(["fresh"]);
+  });
+
+  it("keeps backlog ideas for repos NOT scanned this run", () => {
+    const backlog = [idea("other-repo", "lib", 9)];
+    const fresh = [idea("fresh", "app", 3)];
+    const out = mergeBacklog(backlog, fresh, { scannedKeys: new Set(["app"]) });
+    expect(out.map((i) => i.title).sort()).toEqual(["fresh", "other-repo"]);
+  });
+
+  it("dedupes by key, fresh winning over a stale duplicate", () => {
+    const backlog = [{ ...idea("Add CI", "app", 9), rationale: "stale" }];
+    const fresh = [{ ...idea("add ci", "app", 3), rationale: "fresh" }];
+    const out = mergeBacklog(backlog, fresh, {});
+    expect(out).toHaveLength(1);
+    expect(out[0].rationale).toBe("fresh");
+  });
+
+  it("never resurfaces an already-accepted idea", () => {
+    const fresh = [idea("done", "app", 9), idea("keep", "app", 8)];
+    const acceptedKeys = new Set([ideaKey({ repo: "app", title: "done" })]);
+    const out = mergeBacklog([], fresh, { acceptedKeys });
+    expect(out.map((i) => i.title)).toEqual(["keep"]);
+  });
+
+  it("caps the backlog to `cap`, dropping the lowest-ranked", () => {
+    const fresh = [idea("a", "1", 9), idea("b", "2", 5), idea("c", "3", 1)];
+    const out = mergeBacklog([], fresh, { cap: 2 });
+    expect(out.map((i) => i.title)).toEqual(["a", "b"]);
   });
 });
 

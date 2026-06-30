@@ -127,7 +127,7 @@ agent/
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
   launchd/          macOS LaunchAgent installers: whole control plane (persistent) + scout (every 2h)
-  lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), scout.mjs (scan/rank helpers), message.mjs
+  lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), scout.mjs (scan/rank helpers), scout-memory.mjs (cross-run scan ledger), message.mjs
 ```
 
 `BoardState` is modelled as a flat `tasks` map plus ordered id-lists per column — the canonical multi-container shape — so reorders and cross-lane moves are simple array splices and dnd-kit's `arrayMove` slots in cleanly. The same pure reducer in `board.ts` backs both the browser (`localEngine`) and the server store, so the local and live boards behave identically.
@@ -135,7 +135,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 168 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose helpers, Telegram message parsing
+npm run test       # 198 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose + incremental-scan memory/backlog helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -331,10 +331,18 @@ Key properties:
 The dispatcher *consumes* tasks; the **scout** (`agent/scout.mjs`, `npm run scout`) *produces* them. Every couple of hours it scans **every repo under `AGENT_REPO_BASE` (~/code)** for high-leverage improvements — infra, dev tooling, features, fixes, docs, even a brand-new project when the win is big — ranks them, and **proposes only the single best one to you on Telegram with Yes/No buttons**. Tap ✅ and it's queued for the dispatcher; tap ❌ (or ignore it) and nothing runs. You stay the gatekeeper — no backlog of suggestions, and nothing queued behind your back.
 
 ```
-scan ~/code  →  brainstorm + score EVERY idea  →  rank by ICE  →  propose #1 on Telegram  →  ✅ → queue → dispatcher → PR → Review
+scan only CHANGED repos  →  score + rank ideas into a backlog  →  propose the best on Telegram  →  ✅ → queue → dispatcher → PR → Review
+                                          ↑ quiet day? skip the scan, propose the next backlog idea
 ```
 
 **While a proposal is unanswered it pauses** — the next scheduled run skips scanning so ideas never pile up. If you don't reply for 24h the offer auto-expires and the next run scans afresh; a tap on a stale/superseded message is politely rejected. The pending offer lives in `.data/scout-pending.json`, and the control-plane Telegram bot is what acts on your tap — so keep the control plane running.
+
+**It remembers between runs** (`.data/scout-memory.json`) so a 2-hourly scan isn't a cold re-read of all ~90 repos each time — which is most of the cost, since on a normal day only a few repos change:
+
+- **Skips unchanged repos.** Each run fingerprints every repo by its HEAD commit (`+dirty` when there are uncommitted changes) and **deep-scans only the repos that moved (or are new)**. A repo whose SHA is unchanged is skipped entirely.
+- **Keeps a backlog.** A scan ranks many ideas but only the best is proposed each run; the rest are kept as a ranked backlog. So when **nothing changed, the run skips the model entirely and still proposes a stored idea** (the #2–#5 from an earlier scan) — you keep getting suggestions on quiet days at zero scan cost.
+- **Retires only what you accept.** Proposing an idea drops it from the backlog so a quiet run moves on to the next one, but only an idea you **✅ accept** is permanently suppressed (deduped by a repo+title key, so reworded duplicates collapse). A ❌ or ignored idea is **not** retired — a later scan can resurface it. Fresh scans for a repo supersede that repo's stale backlog ideas, and the backlog + accepted titles are fed back into the prompt as a "don't repeat these" list.
+- **Revisits everything periodically.** A full sweep is forced every 24h (tunable via `SCOUT_FULL_SCAN_MS`, or `--full`) so an unchanged-but-improvable repo still gets a fresh look and a stale ledger can't permanently hide a repo.
 
 It runs a fresh `claude -p` over the workspace and asks it to score each idea on three 1–10 axes — **impact**, **confidence**, **ease** — but **the ranking is computed in code, not taken from the model**: `score = impact × confidence × ease` (the classic ICE score), so it's deterministic and reproducible. The winner becomes a task three ways:
 
@@ -348,7 +356,8 @@ Every scout task carries a `scout` tag for provenance. (With **no Telegram confi
 
 ```bash
 npm run scout                 # scan → rank → propose the top idea on Telegram (board + bot must be up)
-npm run scout -- --dry-run    # scan → rank → print the ranking + task input, propose nothing
+npm run scout -- --dry-run    # scan → rank → print the ranking + task input, propose nothing (memory untouched)
+npm run scout -- --full       # ignore the memory ledger and scan every repo
 npm run scout -- --print-prompt   # dump the scan prompt and exit (no model call)
 ```
 
@@ -361,7 +370,7 @@ npm run scout:install -- --minute 15           # fire at :15 past
 npm run scout:uninstall                        # remove it
 ```
 
-The scout runs no board of its own — on your ✅ the control-plane bot POSTs the task to whatever board is up, so keep the control plane running (`npm run agents:install`) to field the taps and accept the queue. Pure scan/rank/propose helpers are unit-tested in [`agent/lib/scout.test.mjs`](agent/lib/scout.test.mjs); env knobs: `SCOUT_MODEL`, `SCOUT_TIMEOUT` (ms, default 30 min). 
+The scout runs no board of its own — on your ✅ the control-plane bot POSTs the task to whatever board is up, so keep the control plane running (`npm run agents:install`) to field the taps and accept the queue. Pure scan/rank/propose helpers are unit-tested in [`agent/lib/scout.test.mjs`](agent/lib/scout.test.mjs) and the cross-run memory ledger in [`agent/lib/scout-memory.test.mjs`](agent/lib/scout-memory.test.mjs); env knobs: `SCOUT_MODEL`, `SCOUT_TIMEOUT` (ms, default 30 min). 
 
 ### MCP & Telegram
 

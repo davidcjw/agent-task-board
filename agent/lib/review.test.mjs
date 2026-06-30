@@ -5,6 +5,7 @@ import {
   formatChecks,
   parseReview,
   reviewConfig,
+  reviewerRoute,
   reviewPrompt,
   reviewSummary,
   reviewVerdict,
@@ -44,6 +45,35 @@ describe("reviewConfig", () => {
     });
     expect(reviewConfig({ review: { threshold: 250 } }).threshold).toBe(100);
     expect(reviewConfig({ review: { iterations: -3 } }).iterations).toBe(0);
+  });
+});
+
+describe("reviewerRoute", () => {
+  // REVIEW_MODEL defaults to "sonnet" (not set in the test env).
+  it("appends --model <REVIEW_MODEL> to a claude route that doesn't pin a model", () => {
+    const out = reviewerRoute({ command: "claude", args: ["-p", "{prompt}"] });
+    expect(out.args).toEqual(["-p", "{prompt}", "--model", "sonnet"]);
+  });
+
+  it("leaves a route that already pins --model untouched", () => {
+    const route = { command: "claude", args: ["-p", "{prompt}", "--model", "opus"] };
+    expect(reviewerRoute(route)).toBe(route);
+  });
+
+  it("passes through a non-claude route unchanged", () => {
+    const route = { command: "echo", args: ["{prompt}"] };
+    expect(reviewerRoute(route)).toBe(route);
+  });
+
+  it("handles a null/empty route without throwing", () => {
+    expect(reviewerRoute(null)).toBeNull();
+    expect(reviewerRoute({ command: "claude" }).args).toEqual(["--model", "sonnet"]);
+  });
+
+  it("does not mutate the input route's args", () => {
+    const args = ["-p", "{prompt}"];
+    reviewerRoute({ command: "claude", args });
+    expect(args).toEqual(["-p", "{prompt}"]);
   });
 });
 

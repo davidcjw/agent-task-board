@@ -16,6 +16,21 @@ import { shouldOpenPr } from "./routes.mjs";
 
 const DEFAULT_CHECKS = ["lint", "typecheck", "test"];
 const CHECK_TIMEOUT = Number(process.env.REVIEW_CHECK_TIMEOUT || "300000"); // 5 min/check
+// Reviewing/fixing a diff doesn't need the implementer's (Opus) model — run the
+// gate on a cheaper one to cut token burn. Override with REVIEW_MODEL ("" disables).
+const REVIEW_MODEL = process.env.REVIEW_MODEL ?? "sonnet";
+
+/**
+ * Clone a route so the reviewer/fixer run on REVIEW_MODEL instead of the
+ * implementer's model. Only touches `claude` routes that don't already pin a
+ * `--model`; everything else passes through untouched.
+ */
+export function reviewerRoute(route) {
+  if (!REVIEW_MODEL || !route || route.command !== "claude") return route;
+  const args = route.args || [];
+  if (args.includes("--model")) return route;
+  return { ...route, args: [...args, "--model", REVIEW_MODEL] };
+}
 
 // ── pure helpers ───────────────────────────────────────────────────────────
 
@@ -222,6 +237,7 @@ export async function runReviewer(route, task, diff, checks, runCommand, wtPath)
 export async function reviewLoop({ route, task, wtPath, runCommand, log = () => {} }) {
   const cfg = reviewConfig(route);
   const scripts = detectChecks(readPkg(wtPath), cfg.checks);
+  const gateRoute = reviewerRoute(route); // reviewer + fixer run on the cheaper model
 
   let review = null;
   for (let i = 0; i <= cfg.iterations; i++) {
@@ -230,7 +246,7 @@ export async function reviewLoop({ route, task, wtPath, runCommand, log = () => 
     if (i === 0 && !diff.trim()) return { review: null, attempts: 0, flagged: false, summary: "" };
 
     const checks = await runChecks(wtPath, scripts);
-    review = await runReviewer(route, task, diff, checks, runCommand, wtPath);
+    review = await runReviewer(gateRoute, task, diff, checks, runCommand, wtPath);
     const verdict = reviewVerdict({ checks, review, threshold: cfg.threshold });
     log(`review pass ${attempts}: ${verdict.pass ? "PASS" : "FAIL"} — ${verdict.reason}`);
     if (verdict.pass) return { review, attempts, flagged: false, summary: reviewSummary(review, { attempts }) };
@@ -240,7 +256,7 @@ export async function reviewLoop({ route, task, wtPath, runCommand, log = () => 
       return { review, attempts, flagged: true, summary };
     }
     log(`  ↳ fixing: ${review.blocking.slice(0, 3).join("; ") || "(check failures)"}`);
-    await runCommand(route, { ...task, prompt: fixPrompt(task, review, checks) }, wtPath);
+    await runCommand(gateRoute, { ...task, prompt: fixPrompt(task, review, checks) }, wtPath);
   }
   return { review, attempts: 0, flagged: false, summary: "" };
 }

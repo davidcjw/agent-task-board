@@ -28,6 +28,12 @@ export interface Task {
   error?: boolean;
   /** Set when archived (hidden from the lane); cleared on restore. */
   archivedAt?: number;
+  /**
+   * Set (server-side) when you request cancellation of a *running* task; the
+   * dispatcher polls for this, kills the agent's process group, and moves the
+   * card to Done. Cleared when a task is (re)claimed, so a requeue starts clean.
+   */
+  cancelRequestedAt?: number;
 }
 
 /**

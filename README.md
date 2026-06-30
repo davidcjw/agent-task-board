@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-203%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-216%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -135,7 +135,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 203 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose + incremental-scan memory/backlog helpers, Telegram message parsing
+npm run test       # 216 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose + incremental-scan memory/backlog helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -325,6 +325,16 @@ Key properties:
 - **Tune the budget** with `AGENT_TIMEOUT` in `.env`. A task that's *legitimately* longer than 20 min should get a bigger budget or be split — a single very long agent run is also more likely to wander.
 
 > Note: the review gate's reviewer/fixer runs and `npm run` checks have their **own** budgets (`AGENT_TIMEOUT` per `claude` run, `REVIEW_CHECK_TIMEOUT` per check, default 5 min), so a reviewed PR task's total wall-clock can exceed a single `AGENT_TIMEOUT`. Auto-requeue is scoped to the **implementer** run timing out, not the reviewer/fixer.
+
+### Cancel a running task (Telegram `/cancel`)
+
+Changed your mind mid-run? Stop an in-flight task from Telegram:
+
+- **`/cancel`** — cancels the running task. If several are running, it shows an inline **picker** (one button per task: `🛑 title · repo · 4m`).
+- **`/cancel <id>`** — cancel a specific one by id prefix.
+- **`/cancel all`** — stop everything that's running.
+
+The cancelled card moves straight to **Done** with a `🛑 Cancelled by you` marker (it is **not** auto-requeued). Under the hood the bot and dispatcher are separate processes, so `/cancel` writes a `cancelRequestedAt` flag to the board; the dispatcher polls for it (`AGENT_CANCEL_POLL`, default 3s) and **process-group-kills** the agent — so `claude`'s child processes die too, not just the wrapper. For PR tasks the kill lands **before** anything is committed or pushed, so no half-finished branch leaks; the isolated worktree is torn down as usual. With concurrent agents the signal is per-task, so only the one you pick is stopped.
 
 ### Improvement scout (auto-fills the queue)
 

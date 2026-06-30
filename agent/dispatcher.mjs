@@ -17,8 +17,8 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { claimNext, patchTask, reportResult } from "./lib/api.mjs";
-import { createWorktree, finishPr, removeWorktree } from "./lib/git.mjs";
+import { claimNext, getBoard, patchTask, reportResult } from "./lib/api.mjs";
+import { createWorktree, finishPr, killGroup, removeWorktree } from "./lib/git.mjs";
 import { notifyBody } from "./lib/message.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
@@ -49,6 +49,8 @@ const EXECUTE = has("--execute") || process.env.AGENT_EXECUTE === "1";
 const CONCURRENCY = Math.max(1, Number(val("--concurrency", process.env.AGENT_CONCURRENCY || "1")) || 1);
 const INTERVAL = Number(val("--interval", process.env.AGENT_INTERVAL || "3000"));
 const TIMEOUT = Number(process.env.AGENT_TIMEOUT || "1200000"); // 20 min
+// How often to poll the board for cancel requests on in-flight tasks.
+const CANCEL_POLL = Number(process.env.AGENT_CANCEL_POLL || "3000");
 const WORKER = val("--worker", process.env.AGENT_WORKER || "dispatcher");
 const AGENT_FILTER = val("--agent", "") || undefined;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
@@ -93,28 +95,49 @@ async function notify(text) {
   if (telegramEnabled() && CHAT_ID) await sendMessage(CHAT_ID, text);
 }
 
-function runCommand(route, task, cwdOverride) {
+// In-flight tasks → their AbortController. The cancel poll aborts the controller
+// for a task whose board card carries `cancelRequestedAt`; every child spawned
+// for that task (agent run, review checks, fixer) listens on the signal and is
+// process-group-killed. Keyed by task id, so concurrency targets the right run.
+const active = new Map();
+
+function runCommand(route, task, cwdOverride, { signal } = {}) {
   return new Promise((resolve) => {
     const cmdArgs = (route.args || []).map((a) => fill(a, task));
     const cwd = cwdOverride ?? resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
     if (!cwdOverride && missingRepoTag(route, task))
       console.warn(`⚠ no repo: tag on "${task.title}" — running in ${cwd}`);
-    const child = spawn(route.command, cmdArgs, { cwd, env: process.env });
+    // detached → the child leads its own process group, so killGroup reaches the
+    // model/tool sub-processes a plain child.kill would orphan.
+    const child = spawn(route.command, cmdArgs, { cwd, env: process.env, detached: true });
     let out = "";
     let err = "";
     let timedOut = false;
+    let canceled = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killGroup(child);
     }, TIMEOUT);
+    const onAbort = () => {
+      canceled = true;
+      killGroup(child);
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const clear = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => {
-      clearTimeout(timer);
+      clear();
       resolve({ result: `Failed to start "${route.command}": ${e.message}`, error: true });
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      clear();
       let result = out.trim();
       let error = code !== 0;
       // claude --output-format json → { result, is_error }
@@ -130,8 +153,12 @@ function runCommand(route, task, cwdOverride) {
       if (!result)
         result =
           err.trim() ||
-          (timedOut ? `(timed out after ${Math.round(TIMEOUT / 60000)}m)` : `(no output, exit ${code})`);
-      resolve({ result, error, timedOut });
+          (canceled
+            ? "(cancelled)"
+            : timedOut
+              ? `(timed out after ${Math.round(TIMEOUT / 60000)}m)`
+              : `(no output, exit ${code})`);
+      resolve({ result, error, timedOut, canceled });
     });
   });
 }
@@ -139,7 +166,7 @@ function runCommand(route, task, cwdOverride) {
 // Run the agent (edits only) in an isolated worktree, then the dispatcher itself
 // commits, pushes, and opens the PR — so a finished task is already a reviewable
 // PR and concurrent same-repo tasks never collide.
-async function runWithPr(route, runTask, task) {
+async function runWithPr(route, runTask, task, { signal } = {}) {
   const repo = resolveCwd(route, runTask, { base: REPO_BASE, cwdBase: process.cwd() });
   const branch = branchName(task);
 
@@ -147,7 +174,10 @@ async function runWithPr(route, runTask, task) {
   if (wt.error) return { result: `PR aborted: ${wt.error}`, error: true };
 
   try {
-    const agent = await runCommand(route, runTask, wt.path);
+    const agent = await runCommand(route, runTask, wt.path, { signal });
+    // Cancelled by you → bail before committing. The worktree is torn down in
+    // `finally`, so nothing is pushed; processTask reports it done, no requeue.
+    if (agent.canceled || signal?.aborted) return { result: agent.result, error: false, canceled: true };
     // If the agent hit the kill-timeout, don't commit its half-finished edits into a
     // PR. Bail out (the worktree is torn down in `finally`, so nothing is pushed) and
     // let processTask auto-requeue a clean attempt — a fresh run can't collide with a
@@ -163,10 +193,13 @@ async function runWithPr(route, runTask, task) {
         task,
         wtPath: wt.path,
         runCommand,
+        signal,
         log: (m) => console.log(`  ↳ ${m}`),
       });
       if (r.summary) note = `\n\n${r.summary}`;
     }
+    // A cancel during the review gate still bails before opening the PR.
+    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true };
     const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
     if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true };
     if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error };
@@ -203,15 +236,32 @@ async function processTask(task) {
   console.log(`▶ claimed "${task.title}" → ${label}${prNote}`);
   await notify(`🟢 Picked up "${task.title}"\n→ dispatched to ${label}${prNote}`);
 
+  const ac = new AbortController();
+  active.set(task.id, ac);
   let outcome;
-  if (!EXECUTE) {
-    outcome = { result: dryRunPreview(route, runTask, opensPr), error: false };
-  } else if (!route) {
-    outcome = { result: `No runner configured for agent "${task.agent}".`, error: true };
-  } else if (opensPr) {
-    outcome = await runWithPr(route, runTask, task);
-  } else {
-    outcome = await runCommand(route, runTask);
+  try {
+    if (!EXECUTE) {
+      outcome = { result: dryRunPreview(route, runTask, opensPr), error: false };
+    } else if (!route) {
+      outcome = { result: `No runner configured for agent "${task.agent}".`, error: true };
+    } else if (opensPr) {
+      outcome = await runWithPr(route, runTask, task, { signal: ac.signal });
+    } else {
+      outcome = await runCommand(route, runTask, undefined, { signal: ac.signal });
+    }
+  } finally {
+    active.delete(task.id);
+  }
+
+  // Cancelled by you (the signal was aborted) → move straight to Done with a
+  // marker; never auto-requeue. Any partial output is kept for context.
+  if (ac.signal.aborted || outcome.canceled) {
+    const partial = notifyBody(outcome.result || "");
+    const body = `🛑 Cancelled by you${partial ? `\n\n${partial}` : ""}`;
+    await reportResult(task.id, { result: body, error: false, status: "done" });
+    console.log(`🛑 cancelled "${task.title}" → Done`);
+    await notify(`🛑 Cancelled "${task.title}" — moved to Done.`);
+    return;
   }
 
   // Auto-requeue once on timeout: rather than parking a slow task in Review, give
@@ -250,6 +300,34 @@ async function claim() {
     console.error("claim error:", e.message);
     return null;
   }
+}
+
+// Poll the board for cancel requests on in-flight tasks and abort their runs.
+// Runs on its own timer (not the claim loop), so it fires even in sequential mode
+// where the claim loop is blocked awaiting a single task.
+async function pollCancellations() {
+  if (active.size === 0) return;
+  let board;
+  try {
+    board = await getBoard();
+  } catch {
+    return; // board momentarily unreachable — try again next tick
+  }
+  for (const [id, ac] of active) {
+    const t = board.tasks?.[id];
+    if (t && t.cancelRequestedAt && !ac.signal.aborted) {
+      console.log(`🛑 cancel requested for "${t.title}" — killing the run`);
+      await notify(`🛑 Cancelling "${t.title}"…`);
+      ac.abort();
+    }
+  }
+}
+
+// On shutdown, kill the process groups of every in-flight run so a Ctrl-C on the
+// control plane doesn't orphan running agents.
+function shutdown(sig) {
+  for (const ac of active.values()) ac.abort();
+  process.exit(sig === "SIGINT" ? 130 : 0);
 }
 
 async function safeProcess(task) {
@@ -306,6 +384,11 @@ async function main() {
       `${AGENT_FILTER ? ` · agent=${AGENT_FILTER}` : ""}` +
       `${telegramEnabled() && CHAT_ID ? " · telegram on" : ""}`,
   );
+  const cancelTimer = setInterval(() => pollCancellations().catch(() => {}), CANCEL_POLL);
+  cancelTimer.unref?.(); // don't keep the process alive just for the poll
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
   if (CONCURRENCY > 1) await runPool();
   else await runSequential();
 }

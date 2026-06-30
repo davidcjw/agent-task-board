@@ -23,7 +23,13 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { addTask } from "./lib/api.mjs";
+import { addTask, cancelTask, getBoard } from "./lib/api.mjs";
+import {
+  cancelKeyboard,
+  cancelPickerText,
+  matchRunningTask,
+  parseCancelCallback,
+} from "./lib/cancel.mjs";
 import { parseMessage } from "./lib/message.mjs";
 import { clearPending, readPending } from "./lib/pending.mjs";
 import { listRepos } from "./lib/repos.mjs";
@@ -122,7 +128,74 @@ const HELP =
   "• /democratizing_claude fix login  (one-off — type / for the menu)\n" +
   "• /use democratizing_claude  → make it the default, then just send tasks\n" +
   "• /use  → show it · /use off  → clear it\n\n" +
+  "Stop work in flight:\n" +
+  "• /cancel  → cancel the running task (or pick one if several)\n" +
+  "• /cancel <id>  → cancel by id · /cancel all  → cancel everything\n\n" +
   "/id — show this chat id (set as TELEGRAM_CHAT_ID for notifications)";
+
+// The board's currently-running tasks (the cancel candidates).
+async function runningTasks() {
+  const board = await getBoard();
+  return (board.columns?.running || []).map((id) => board.tasks[id]).filter(Boolean);
+}
+
+// Fire a cancel request for one task and confirm. The dispatcher does the actual
+// kill on its next poll, then moves the card to Done.
+async function doCancel(chatId, task) {
+  try {
+    await cancelTask(task.id);
+    await sendMessage(chatId, `🛑 Cancelling "${task.title}" (id ${task.id.slice(0, 8)})… it'll move to Done shortly.`);
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ Couldn't cancel "${task.title}": ${e.message}`);
+  }
+}
+
+// /cancel dispatch: bare (one → cancel, many → picker), <id-prefix>, or `all`.
+async function handleCancel(chatId, arg) {
+  let running;
+  try {
+    running = await runningTasks();
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ Couldn't reach the board: ${e.message}`);
+    return;
+  }
+  if (!running.length) {
+    await sendMessage(chatId, "Nothing is running right now.");
+    return;
+  }
+  if (arg.toLowerCase() === "all") {
+    let ok = 0;
+    for (const t of running) {
+      try {
+        await cancelTask(t.id);
+        ok++;
+      } catch {
+        /* skip one that already finished */
+      }
+    }
+    await sendMessage(chatId, `🛑 Cancelling ${ok}/${running.length} running task(s)… they'll move to Done.`);
+    return;
+  }
+  if (arg) {
+    const { match, candidates } = matchRunningTask(running, arg);
+    if (!match) {
+      await sendMessage(
+        chatId,
+        candidates.length > 1
+          ? `🤔 "${arg}" matches ${candidates.length} running tasks — use more of the id.`
+          : `❓ No running task id starts with "${arg}".`,
+      );
+      return;
+    }
+    await doCancel(chatId, match);
+    return;
+  }
+  if (running.length === 1) {
+    await doCancel(chatId, running[0]);
+    return;
+  }
+  await sendMessage(chatId, cancelPickerText(running), { replyMarkup: cancelKeyboard(running) });
+}
 
 async function handle(message) {
   const chatId = message.chat?.id;
@@ -142,6 +215,13 @@ async function handle(message) {
   if (!isAllowed(chatId)) {
     await sendMessage(chatId, "🚫 Not authorized to queue tasks on this board.");
     console.warn(`rejected message from chat ${chatId}`);
+    return;
+  }
+
+  // /cancel — stop a running task. Bare: one running → cancel it, many → a picker.
+  // /cancel <id-prefix> targets one; /cancel all stops every running task.
+  if (text === "/cancel" || text.startsWith("/cancel ")) {
+    await handleCancel(chatId, text.slice(7).trim());
     return;
   }
 
@@ -227,6 +307,25 @@ async function handleCallback(cb) {
   const chatId = cb.message?.chat?.id;
   const messageId = cb.message?.message_id;
   const base = cb.message?.text || "🔭 Scout proposal";
+
+  // A tap on a /cancel picker button.
+  const cancelHit = parseCancelCallback(cb.data);
+  if (cancelHit) {
+    if (!isAllowed(chatId)) {
+      await answerCallbackQuery(cb.id, "🚫 Not authorized.");
+      return;
+    }
+    try {
+      const task = await cancelTask(cancelHit.id);
+      await answerCallbackQuery(cb.id, "Cancelling…");
+      await editMessageText(chatId, messageId, `${base}\n\n🛑 Cancelling "${task.title}" — moving to Done.`);
+    } catch (e) {
+      await answerCallbackQuery(cb.id, "Couldn't cancel.");
+      await editMessageText(chatId, messageId, `${base}\n\n⚠️ ${e.message} (already finished?)`);
+    }
+    return;
+  }
+
   const parsed = parseCallback(cb.data);
   if (!parsed) {
     await answerCallbackQuery(cb.id);
@@ -280,6 +379,7 @@ async function handleCallback(cb) {
 async function syncCommands() {
   const reserved = [
     { command: "use", description: "Set / show the active repo (/use <repo>, /use off)" },
+    { command: "cancel", description: "Cancel a running task (/cancel, /cancel <id>, /cancel all)" },
     { command: "id", description: "Show this chat id" },
     { command: "help", description: "How to use this bot" },
   ];

@@ -14,23 +14,50 @@ import { worktreePath } from "./routes.mjs";
 
 const WORKTREE_BASE = process.env.AGENT_WORKTREE_DIR || path.join(os.tmpdir(), "atb-worktrees");
 
+// Kill a child's whole process group (it's spawned detached, so it leads its own
+// group) — git/gh/npm can fork sub-processes a plain child.kill would orphan.
+// Falls back to killing just the child if the group send fails.
+export function killGroup(child, sig = "SIGKILL") {
+  if (!child || child.pid == null) return;
+  try {
+    process.kill(-child.pid, sig);
+  } catch {
+    try {
+      child.kill(sig);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 // Shell out to git/gh (and, for the review gate, npm). Resolves { code, out, err }
 // and never rejects. `timeout` (ms) SIGKILLs a hung command — checks like
-// `npm test` can otherwise run forever. Exported so review.mjs reuses one runner.
-export function run(cmd, args, cwd, { timeout } = {}) {
+// `npm test` can otherwise run forever. `signal` (AbortSignal) lets a caller
+// cancel a long check mid-run (the dispatcher's task-cancel). Both kill the whole
+// process group. Exported so review.mjs/dispatcher reuse one runner.
+export function run(cmd, args, cwd, { timeout, signal } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, env: process.env });
+    const child = spawn(cmd, args, { cwd, env: process.env, detached: true });
     let out = "";
     let err = "";
-    const timer = timeout ? setTimeout(() => child.kill("SIGKILL"), timeout) : null;
+    const timer = timeout ? setTimeout(() => killGroup(child), timeout) : null;
+    const onAbort = () => killGroup(child);
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => {
-      if (timer) clearTimeout(timer);
+      cleanup();
       resolve({ code: -1, out: out.trim(), err: e.message });
     });
     child.on("close", (code) => {
-      if (timer) clearTimeout(timer);
+      cleanup();
       resolve({ code, out: out.trim(), err: err.trim() });
     });
   });

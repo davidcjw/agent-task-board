@@ -53,6 +53,13 @@ export async function reportResult(id, { result, error = false, status = "review
   return data.task;
 }
 
+/** Request cancellation of a running task. Resolves the task, or throws (409) if
+ *  it isn't running. The dispatcher acts on the stamped flag. */
+export async function cancelTask(id) {
+  const data = await request("POST", `/api/tasks/${id}/cancel`);
+  return data.task;
+}
+
 /** List tasks, optionally filtered by status, newest column order preserved. */
 export async function listTasks(status) {
   const board = await getBoard();

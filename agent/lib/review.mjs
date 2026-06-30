@@ -213,40 +213,45 @@ function readPkg(wtPath) {
   }
 }
 
-/** Run each check script in the worktree; { allPass, results:[{script,ok,output}] }. */
-export async function runChecks(wtPath, scripts) {
+/** Run each check script in the worktree; { allPass, results:[{script,ok,output}] }.
+ *  `signal` lets a task-cancel kill a long check mid-run. */
+export async function runChecks(wtPath, scripts, signal) {
   const results = [];
   for (const s of scripts) {
-    const r = await run("npm", ["run", "--silent", s], wtPath, { timeout: CHECK_TIMEOUT });
+    if (signal?.aborted) break;
+    const r = await run("npm", ["run", "--silent", s], wtPath, { timeout: CHECK_TIMEOUT, signal });
     results.push({ script: s, ok: r.code === 0, output: [r.out, r.err].filter(Boolean).join("\n") });
   }
   return { allPass: results.every((r) => r.ok), results };
 }
 
 /** Spawn a fresh reviewer via the injected runCommand and parse its verdict. */
-export async function runReviewer(route, task, diff, checks, runCommand, wtPath) {
-  const out = await runCommand(route, { ...task, prompt: reviewPrompt(task, diff, checks) }, wtPath);
+export async function runReviewer(route, task, diff, checks, runCommand, wtPath, signal) {
+  const out = await runCommand(route, { ...task, prompt: reviewPrompt(task, diff, checks) }, wtPath, { signal });
   return parseReview(out.result);
 }
 
 /**
  * Drive the review→fix loop inside an already-created worktree. Returns
  * { review, attempts, flagged, summary }. `runCommand` is the dispatcher's runner
- * (injected). Never opens the PR — the dispatcher does that after this returns.
+ * (injected). `signal` (AbortSignal) lets a task-cancel stop the gate between/
+ * within passes. Never opens the PR — the dispatcher does that after this returns.
  */
-export async function reviewLoop({ route, task, wtPath, runCommand, log = () => {} }) {
+export async function reviewLoop({ route, task, wtPath, runCommand, signal, log = () => {} }) {
   const cfg = reviewConfig(route);
   const scripts = detectChecks(readPkg(wtPath), cfg.checks);
   const gateRoute = reviewerRoute(route); // reviewer + fixer run on the cheaper model
 
   let review = null;
   for (let i = 0; i <= cfg.iterations; i++) {
+    if (signal?.aborted) return { review, attempts: i, flagged: false, summary: "" };
     const attempts = i + 1;
     const diff = await worktreeDiff(wtPath);
     if (i === 0 && !diff.trim()) return { review: null, attempts: 0, flagged: false, summary: "" };
 
-    const checks = await runChecks(wtPath, scripts);
-    review = await runReviewer(gateRoute, task, diff, checks, runCommand, wtPath);
+    const checks = await runChecks(wtPath, scripts, signal);
+    if (signal?.aborted) return { review, attempts, flagged: false, summary: "" };
+    review = await runReviewer(gateRoute, task, diff, checks, runCommand, wtPath, signal);
     const verdict = reviewVerdict({ checks, review, threshold: cfg.threshold });
     log(`review pass ${attempts}: ${verdict.pass ? "PASS" : "FAIL"} — ${verdict.reason}`);
     if (verdict.pass) return { review, attempts, flagged: false, summary: reviewSummary(review, { attempts }) };
@@ -256,7 +261,7 @@ export async function reviewLoop({ route, task, wtPath, runCommand, log = () => 
       return { review, attempts, flagged: true, summary };
     }
     log(`  ↳ fixing: ${review.blocking.slice(0, 3).join("; ") || "(check failures)"}`);
-    await runCommand(gateRoute, { ...task, prompt: fixPrompt(task, review, checks) }, wtPath);
+    await runCommand(gateRoute, { ...task, prompt: fixPrompt(task, review, checks) }, wtPath, { signal });
   }
   return { review, attempts: 0, flagged: false, summary: "" };
 }

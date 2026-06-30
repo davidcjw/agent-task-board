@@ -99,8 +99,36 @@ export const store = {
   claim(filter: ClaimFilter, worker: string): Promise<Task | null> {
     return withLock(async () => {
       const { state, task } = claimNext(await readLocked(), filter, worker);
-      if (task) await writeLocked(state);
+      if (!task) return null;
+      // Start every run with a clean slate: drop any stale cancel request (e.g.
+      // left over from a task that was cancelled-then-requeued) so a freshly
+      // claimed task is never killed the instant it starts.
+      if (task.cancelRequestedAt != null) {
+        const cleared: Task = { ...task };
+        delete cleared.cancelRequestedAt;
+        const next = { ...state, tasks: { ...state.tasks, [task.id]: cleared } };
+        await writeLocked(next);
+        return cleared;
+      }
+      await writeLocked(state);
       return task;
+    });
+  },
+
+  /**
+   * Request cancellation of a *running* task: stamp `cancelRequestedAt` so the
+   * dispatcher (which owns the agent's child process) can kill it and report it
+   * done. No-op for a task that isn't running. Returns the task, or null if it's
+   * absent or not running (so the caller can tell the user "nothing to cancel").
+   */
+  requestCancel(id: string): Promise<Task | null> {
+    return withLock(async () => {
+      const state = await readLocked();
+      const task = state.tasks[id];
+      if (!task || task.status !== "running") return null;
+      const updated: Task = { ...task, cancelRequestedAt: Date.now() };
+      await writeLocked({ ...state, tasks: { ...state.tasks, [id]: updated } });
+      return updated;
     });
   },
 

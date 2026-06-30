@@ -69,4 +69,25 @@ describe("server store", () => {
     expect(updated?.result).toBe("the output");
     expect(updated?.status).toBe("review");
   });
+
+  it("requestCancel stamps a running task and is a no-op otherwise", async () => {
+    const a = await store.create({ title: "t", prompt: "p", agent: "", tags: [], notes: "" });
+    // Not running yet → no-op (null).
+    expect(await store.requestCancel(a.task.id)).toBeNull();
+    expect(await store.requestCancel("nope")).toBeNull();
+    // Claim → running → cancel stamps the flag.
+    await store.claim({}, "w1");
+    const canceled = await store.requestCancel(a.task.id);
+    expect(canceled?.cancelRequestedAt).toBeTypeOf("number");
+  });
+
+  it("clears a stale cancel flag when a task is (re)claimed", async () => {
+    const a = await store.create({ title: "t", prompt: "p", agent: "", tags: [], notes: "" });
+    await store.claim({}, "w1");
+    await store.requestCancel(a.task.id);
+    // Simulate a requeue back to the queue, then re-claim it.
+    await store.update(a.task.id, { status: "queued" });
+    const reclaimed = await store.claim({}, "w2");
+    expect(reclaimed?.cancelRequestedAt).toBeUndefined();
+  });
 });

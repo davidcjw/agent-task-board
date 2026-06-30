@@ -28,6 +28,7 @@ import { parseMessage } from "./lib/message.mjs";
 import { clearPending, readPending } from "./lib/pending.mjs";
 import { listRepos } from "./lib/repos.mjs";
 import { matchRepoSlug, repoCommandName, repoFromTags } from "./lib/routes.mjs";
+import { readMemory, recordAccepted, writeMemory } from "./lib/scout-memory.mjs";
 import { parseCallback } from "./lib/scout.mjs";
 import {
   answerCallbackQuery,
@@ -251,6 +252,19 @@ async function handleCallback(cb) {
   try {
     const task = await addTask(pending.task);
     clearPending();
+    // ✅ accept is the only thing that permanently retires a scout idea — record
+    // it so it's never re-proposed (best-effort; a memory hiccup must not fail the
+    // queue). A ❌/ignore records nothing, leaving the idea free to resurface.
+    if (pending.ideaKey) {
+      try {
+        const repo = repoFromTags(pending.task?.tags || []);
+        writeMemory(
+          recordAccepted(readMemory(), pending.ideaKey, { repo, title: pending.task?.title || "", now: Date.now() }),
+        );
+      } catch {
+        /* memory is advisory */
+      }
+    }
     await answerCallbackQuery(cb.id, "Queued ✅");
     await editMessageText(chatId, messageId, `${base}\n\n✅ Queued to the board (id ${task.id.slice(0, 8)}).`);
     console.log(`scout proposal ${pending.id} → queued ${task.id}`);

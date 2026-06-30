@@ -28,7 +28,22 @@ import { addTask } from "./lib/api.mjs";
 import { clearPending, readPending, writePending } from "./lib/pending.mjs";
 import { listRepos, REPO_BASE } from "./lib/repos.mjs";
 import {
+  acceptedKeySet,
+  avoidTitles,
+  dropIdea,
+  dueForFullScan,
+  readMemory,
+  recordAccepted,
+  recordScan,
+  repoFingerprints,
+  reposToScan,
+  setBacklog,
+  topIdea,
+  writeMemory,
+} from "./lib/scout-memory.mjs";
+import {
   ideaToTask,
+  mergeBacklog,
   parseScout,
   proposalActive,
   proposalKeyboard,
@@ -36,11 +51,13 @@ import {
   rankIdeas,
   scoutSummary,
 } from "./lib/scout.mjs";
+import { normalizeRepoKey, repoFromTags } from "./lib/routes.mjs";
 import { editMessageText, sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const DRY_RUN = has("--dry-run");
+const FULL = has("--full"); // ignore the memory ledger and scan every repo
 const MODEL = process.env.SCOUT_MODEL || "";
 const TIMEOUT = Number(process.env.SCOUT_TIMEOUT || "1800000"); // 30 min — scanning many repos is slow
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
@@ -49,15 +66,25 @@ async function notify(text) {
   if (telegramEnabled() && CHAT_ID) await sendMessage(CHAT_ID, text);
 }
 
-function scoutPrompt(repos) {
+function scoutPrompt(repos, avoid = []) {
   const list = repos.length ? repos.map((r) => `- ${r}`).join("\n") : "(none found)";
+  const avoidBlock = avoid.length
+    ? [
+        "",
+        "These ideas are already known (queued or previously proposed) — do NOT",
+        "repeat them; if a repo still has room, find a different, fresh angle:",
+        ...avoid.map((t) => `- ${t}`),
+      ].join("\n")
+    : "";
   return [
     "You are an autonomous improvement scout for a developer's project folder.",
-    `The current directory is the root of that folder; it contains these projects:`,
+    `The current directory is the root of that folder. Survey ONLY these projects`,
+    `(the rest are unchanged since the last scan — ignore them):`,
     "",
     list,
+    avoidBlock,
     "",
-    "Survey the projects. For each, look at the README, the code structure, recent",
+    "For each, look at the README, the code structure, recent",
     "git history, TODOs/FIXMEs, test coverage, tooling/CI config, and dependency",
     "health. Brainstorm concrete, high-leverage improvements across these kinds:",
     "infra, devtools, feature, fix, docs. You MAY also propose a brand-new project",
@@ -118,9 +145,8 @@ async function main() {
   const repos = listRepos();
   console.log(`🔭 scout · base=${REPO_BASE} · ${repos.length} repos · ${DRY_RUN ? "dry-run" : "will propose top idea"}`);
 
-  const prompt = scoutPrompt(repos);
   if (has("--print-prompt")) {
-    console.log(prompt);
+    console.log(scoutPrompt(repos, avoidTitles(readMemory())));
     return;
   }
   if (!repos.length) {
@@ -150,46 +176,84 @@ async function main() {
     }
   }
 
-  console.log("scanning… (this can take a while)");
-  const { text, error } = await runScan(prompt);
-  if (error) {
-    console.error(`✗ scan failed: ${error}`);
-    await notify(`🔭 Scout failed to scan: ${error}`);
-    process.exitCode = 1;
-    return;
-  }
+  // Incremental scan: fingerprint every repo (HEAD sha, +dirty on uncommitted
+  // changes) and deep-scan only those that moved or are new — skipping unchanged
+  // repos is the cost saving. A periodic full sweep (or --full) rebuilds the
+  // backlog from scratch so a stale ledger can't permanently hide a repo.
+  const now = Date.now();
+  let memory = readMemory();
+  const fingerprints = await repoFingerprints(repos);
+  const full = FULL || dueForFullScan(memory, now);
+  const { scan, skipped } = full ? { scan: repos, skipped: [] } : reposToScan(repos, fingerprints, memory);
+  console.log(
+    `📒 memory · ${scan.length} to scan, ${skipped.length} unchanged${full ? " · full sweep" : ""} · backlog ${memory.ideas.length}`,
+  );
 
-  const { ideas } = parseScout(text);
-  const ranked = rankIdeas(ideas);
-  const top = ranked[0] || null;
-
-  if (!top) {
-    // parseScout failed closed — persist the raw scan text so a recurrence is
-    // diagnosable instead of opaque (the model may have wrapped the JSON in
-    // prose, truncated it, or returned an empty result).
-    let savedTo = "";
-    try {
-      const file = path.join(process.cwd(), ".data", "scout-last-scan.txt");
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, text);
-      savedTo = file;
-    } catch {
-      /* best-effort — don't let logging failure mask the real outcome */
+  // Scan the changed repos (if any) and fold their fresh ideas into the ranked
+  // backlog, deduped against what we already hold and already proposed. When
+  // nothing changed we skip the model entirely and just propose from the backlog.
+  if (scan.length) {
+    console.log("scanning… (this can take a while)");
+    const { text, error } = await runScan(scoutPrompt(scan, avoidTitles(memory)));
+    if (error) {
+      console.error(`✗ scan failed: ${error}`);
+      await notify(`🔭 Scout failed to scan: ${error}`);
+      process.exitCode = 1;
+      return;
     }
-    const preview = text.slice(0, 500).replace(/\s+/g, " ").trim();
-    console.warn(
-      `No actionable ideas parsed from the scan (${text.length} chars of model output).` +
-        (savedTo ? ` Raw output saved to ${savedTo}.` : "") +
-        (preview ? `\n  preview: ${preview}${text.length > 500 ? "…" : ""}` : " (empty output)"),
-    );
-    await notify("🔭 Scout ran but found no actionable improvements this time.");
+
+    const { ideas } = parseScout(text);
+    const fresh = rankIdeas(ideas);
+    if (!fresh.length) {
+      // parseScout failed closed — persist the raw scan text so a recurrence is
+      // diagnosable (the model may have wrapped/truncated the JSON or returned
+      // nothing). We still fall through to propose from the existing backlog.
+      let savedTo = "";
+      try {
+        const file = path.join(process.cwd(), ".data", "scout-last-scan.txt");
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, text);
+        savedTo = file;
+      } catch {
+        /* best-effort — don't let logging failure mask the real outcome */
+      }
+      const preview = text.slice(0, 500).replace(/\s+/g, " ").trim();
+      console.warn(
+        `No actionable ideas parsed from the scan (${text.length} chars of model output).` +
+          (savedTo ? ` Raw output saved to ${savedTo}.` : "") +
+          (preview ? `\n  preview: ${preview}${text.length > 500 ? "…" : ""}` : " (empty output)"),
+      );
+    }
+
+    // Fresh ideas for a just-scanned repo supersede that repo's stale backlog
+    // entries; a full sweep rebuilds from the fresh scan alone.
+    const scannedKeys = new Set(scan.map(normalizeRepoKey));
+    const backlog = mergeBacklog(full ? [] : memory.ideas, fresh, {
+      scannedKeys,
+      acceptedKeys: acceptedKeySet(memory),
+    });
+    memory = recordScan(setBacklog(memory, backlog), { scanned: scan, fingerprints, now, full });
+    if (!DRY_RUN) writeMemory(memory);
+  } else {
+    console.log("⏭ no repos changed — proposing from the existing backlog (no scan).");
+  }
+
+  // Propose the best idea we hold — fresh from this scan or carried over from an
+  // earlier one (the #2–#5 a prior run ranked but didn't pitch).
+  const top = topIdea(memory);
+  if (!top) {
+    console.log("Scout has no ideas to propose right now (empty backlog).");
+    if (scan.length) await notify("🔭 Scout ran but found no actionable improvements this time.");
     return;
   }
 
-  const summary = scoutSummary(ranked, top);
+  const summary = scoutSummary(memory.ideas, top);
   console.log(`\n${summary}\n`);
 
   const task = ideaToTask(top, { knownRepos: repos, repoBase: REPO_BASE });
+  // The ledger keys repos by the resolved `repo:` tag (normalized dir name) — ""
+  // for workspace/new-project ideas.
+  const taskRepo = repoFromTags(task.tags);
 
   if (DRY_RUN) {
     console.log("[dry-run] not proposing. Top idea task input:");
@@ -203,6 +267,8 @@ async function main() {
     console.warn("Telegram not configured — queuing directly, no confirmation.");
     try {
       const created = await addTask(task);
+      // Direct-queue is an immediate accept → record it so it's never re-proposed.
+      writeMemory(recordAccepted(memory, top.key, { repo: taskRepo, title: top.title, now }));
       console.log(`✓ queued task ${created.id} — "${created.title}"`);
     } catch (e) {
       console.error(`✗ failed to push task: ${e.message}`);
@@ -221,7 +287,19 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  writePending({ id, createdAt: Date.now(), chatId: String(CHAT_ID), messageId: sent.message_id, task, text: body });
+  writePending({
+    id,
+    createdAt: Date.now(),
+    chatId: String(CHAT_ID),
+    messageId: sent.message_id,
+    task,
+    text: body,
+    ideaKey: top.key,
+  });
+  // Drop it from the backlog so a quiet run advances to the next idea — but do NOT
+  // record it accepted: only a ✅ does that (the bot), so a ❌/ignore lets a later
+  // scan resurface it.
+  writeMemory(dropIdea(memory, top.key));
   console.log(`📨 proposed "${top.title}" — awaiting your Yes/No (id ${id}).`);
 }
 

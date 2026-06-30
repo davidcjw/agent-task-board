@@ -11,7 +11,7 @@
 // (impact × confidence × ease) — ranking stays deterministic and reproducible
 // rather than trusting a model-supplied number.
 
-import { matchRepoSlug } from "./routes.mjs";
+import { matchRepoSlug, normalizeRepoKey } from "./routes.mjs";
 
 /** Every scout-authored task carries this tag so its provenance is visible. */
 export const SCOUT_TAG = "scout";
@@ -93,6 +93,51 @@ export function rankIdeas(ideas) {
 /** The single highest-ranked idea, or null when there are none. */
 export function selectTop(ideas) {
   return rankIdeas(ideas)[0] || null;
+}
+
+/**
+ * A stable dedup key for an idea: its repo (separator-/case-insensitive) plus a
+ * slug of its title. Two scans that surface the same improvement — even phrased a
+ * little differently or with `democratizing_claude` vs `democratizing-claude` —
+ * collapse to one key, so the backlog never holds the same idea twice.
+ */
+export function ideaKey(idea) {
+  const repo = normalizeRepoKey(String(idea?.repo || ""));
+  const title = String(idea?.title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${repo}::${title}`;
+}
+
+/**
+ * Merge freshly-scanned ideas into the persisted backlog, deduped, re-ranked, and
+ * capped — the heart of "scan a few repos, keep proposing the best of everything":
+ *  - fresh ideas for a just-scanned repo SUPERSEDE that repo's stale backlog
+ *    entries (drop kept entries whose repo is in `scannedKeys`), so a re-scan
+ *    refreshes a repo's ideas instead of piling duplicates,
+ *  - an idea already ACCEPTED (`acceptedKeys`) never resurfaces; a merely
+ *    proposed-then-rejected idea is not here, so it can come back,
+ *  - remaining collisions dedupe by `ideaKey` (fresh wins over stale),
+ *  - the survivors are ranked by ICE and capped to `cap`.
+ * Each returned idea carries its `key` so the memory layer can dedup/remove by it
+ * without re-importing the scorer. Pure → returns a new array.
+ */
+export function mergeBacklog(backlog, fresh, { scannedKeys = new Set(), acceptedKeys = new Set(), cap = 50 } = {}) {
+  const kept = (Array.isArray(backlog) ? backlog : []).filter(
+    (i) => i && typeof i === "object" && !scannedKeys.has(normalizeRepoKey(String(i.repo || ""))),
+  );
+  const seen = new Set();
+  const merged = [];
+  // Fresh first so that on a key collision the current scan's idea is the one kept.
+  for (const idea of [...(Array.isArray(fresh) ? fresh : []), ...kept]) {
+    if (!idea || typeof idea !== "object") continue;
+    const key = ideaKey(idea);
+    if (seen.has(key) || acceptedKeys.has(key)) continue;
+    seen.add(key);
+    merged.push({ ...idea, key });
+  }
+  return rankIdeas(merged).slice(0, cap);
 }
 
 /** Lowercase, hyphen-separated folder slug for a brand-new project. */

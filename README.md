@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-168%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-198%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 

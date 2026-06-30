@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Telegram bot (inbound) — your control surface. Message the bot and it turns
 // what you say into a queued task on the board. The dispatcher then claims it,
-// reports "picked up by X", and reports the result back to your chat.
+// reports "picked up by X", and reports the result back to your chat. It also
+// fields the Improvement Scout's Yes/No buttons (handleCallback): ✅ queues the
+// parked proposal, ❌ discards it (see lib/pending.mjs + agent/scout.mjs).
 //
 // Message format:
 //   "Refactor the auth module and add tests"       → queued, default agent
@@ -23,9 +25,18 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addTask } from "./lib/api.mjs";
 import { parseMessage } from "./lib/message.mjs";
+import { clearPending, readPending } from "./lib/pending.mjs";
 import { listRepos } from "./lib/repos.mjs";
 import { matchRepoSlug, repoCommandName, repoFromTags } from "./lib/routes.mjs";
-import { getUpdates, sendMessage, setMyCommands, telegramEnabled } from "./lib/telegram.mjs";
+import { parseCallback } from "./lib/scout.mjs";
+import {
+  answerCallbackQuery,
+  editMessageText,
+  getUpdates,
+  sendMessage,
+  setMyCommands,
+  telegramEnabled,
+} from "./lib/telegram.mjs";
 
 if (!telegramEnabled()) {
   console.error("Set TELEGRAM_BOT_TOKEN to run the Telegram bot.");
@@ -206,6 +217,50 @@ async function handle(message) {
   }
 }
 
+// A tapped scout Yes/No button. We park exactly one proposal at a time, so a tap
+// is honored only when its id matches the current pending offer; a stale tap (the
+// proposal expired, was already answered, or superseded) gets a gentle "no longer
+// active". ✅ queues the parked task; ❌ discards it. Either way the message is
+// stamped with the outcome and its buttons drop away.
+async function handleCallback(cb) {
+  const chatId = cb.message?.chat?.id;
+  const messageId = cb.message?.message_id;
+  const base = cb.message?.text || "🔭 Scout proposal";
+  const parsed = parseCallback(cb.data);
+  if (!parsed) {
+    await answerCallbackQuery(cb.id);
+    return;
+  }
+  if (!isAllowed(chatId)) {
+    await answerCallbackQuery(cb.id, "🚫 Not authorized.");
+    return;
+  }
+  const pending = readPending();
+  if (!pending || pending.id !== parsed.id) {
+    await answerCallbackQuery(cb.id, "This proposal is no longer active.");
+    await editMessageText(chatId, messageId, `${base}\n\n⏱ No longer active.`);
+    return;
+  }
+  if (parsed.action === "no") {
+    clearPending();
+    await answerCallbackQuery(cb.id, "Skipped — nothing queued.");
+    await editMessageText(chatId, messageId, `${base}\n\n❌ Skipped — nothing queued.`);
+    console.log(`scout proposal ${pending.id} skipped`);
+    return;
+  }
+  try {
+    const task = await addTask(pending.task);
+    clearPending();
+    await answerCallbackQuery(cb.id, "Queued ✅");
+    await editMessageText(chatId, messageId, `${base}\n\n✅ Queued to the board (id ${task.id.slice(0, 8)}).`);
+    console.log(`scout proposal ${pending.id} → queued ${task.id}`);
+  } catch (e) {
+    await answerCallbackQuery(cb.id, "Couldn't queue.");
+    await editMessageText(chatId, messageId, `${base}\n\n⚠️ Couldn't queue: ${e.message}`);
+    console.error(`scout proposal queue failed: ${e.message}`);
+  }
+}
+
 // Register the `/`-autocomplete menu: reserved commands + one per repo under the
 // repo base (hyphens → underscores; Telegram caps names at 32 chars, list at 100).
 async function syncCommands() {
@@ -245,6 +300,7 @@ async function main() {
       for (const u of updates) {
         offset = u.update_id + 1;
         if (u.message) await handle(u.message);
+        else if (u.callback_query) await handleCallback(u.callback_query);
       }
       if (updates.length) saveOffset(offset);
     } catch (e) {

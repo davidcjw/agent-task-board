@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 // Improvement Scout — scans every repo under ~/code, asks an agent to brainstorm
 // and SCORE improvements (infra, dev tools, features, fixes — even a brand-new
-// project if the win is big enough), ranks them all by ICE score, and pushes
-// ONLY the single highest-ranked idea to the board as a queued task for the
-// dispatcher to pick up.
+// project if the win is big enough), ranks them all by ICE score, and PROPOSES
+// only the single highest-ranked idea to you on Telegram with Yes/No buttons.
+// It queues the task only if you tap ✅; tap ❌ (or ignore it) and nothing runs.
 //
-// Runs once and exits — meant to fire on a schedule (10pm via launchd, see
-// agent/launchd/scout-install.mjs) or by hand. It pushes by default; the board
-// (npm run agents / the control plane) must be up so the task can be POSTed.
+// Runs once and exits — meant to fire every 2h during waking hours via launchd
+// (see agent/launchd/scout-install.mjs) or by hand. While a proposal is still
+// awaiting your answer it pauses (skips the scan); after a 24h TTL the next run
+// dismisses the stale proposal and scans afresh. The pending offer is parked in
+// .data/scout-pending.json; the control-plane Telegram bot acts on your tap.
+// Needs a board up (npm run agents / the control plane) to accept a ✅.
+// Without Telegram configured it falls back to pushing straight to the board.
 //
 // Usage:
-//   node agent/scout.mjs                # scan → rank → push the top idea
-//   node agent/scout.mjs --dry-run      # scan → rank → print, but push nothing
+//   node agent/scout.mjs                # scan → rank → propose the top idea
+//   node agent/scout.mjs --dry-run      # scan → rank → print, but propose nothing
 //   node agent/scout.mjs --print-prompt # print the scan prompt and exit
 //
 // Env: AGENT_REPO_BASE (default ~/code), SCOUT_MODEL, SCOUT_TIMEOUT (ms),
@@ -19,9 +23,18 @@
 
 import { spawn } from "node:child_process";
 import { addTask } from "./lib/api.mjs";
+import { clearPending, readPending, writePending } from "./lib/pending.mjs";
 import { listRepos, REPO_BASE } from "./lib/repos.mjs";
-import { ideaToTask, parseScout, rankIdeas, scoutSummary } from "./lib/scout.mjs";
-import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
+import {
+  ideaToTask,
+  parseScout,
+  proposalActive,
+  proposalKeyboard,
+  proposalText,
+  rankIdeas,
+  scoutSummary,
+} from "./lib/scout.mjs";
+import { editMessageText, sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
@@ -101,7 +114,7 @@ function runScan(prompt) {
 
 async function main() {
   const repos = listRepos();
-  console.log(`🔭 scout · base=${REPO_BASE} · ${repos.length} repos · ${DRY_RUN ? "dry-run" : "will push top idea"}`);
+  console.log(`🔭 scout · base=${REPO_BASE} · ${repos.length} repos · ${DRY_RUN ? "dry-run" : "will propose top idea"}`);
 
   const prompt = scoutPrompt(repos);
   if (has("--print-prompt")) {
@@ -111,6 +124,28 @@ async function main() {
   if (!repos.length) {
     console.warn(`No repos found under ${REPO_BASE} — nothing to scout.`);
     return;
+  }
+
+  // Pause-until-answered: if a prior proposal is still within its TTL, don't
+  // scan again — wait for your Yes/No so unanswered ideas never pile up. Once
+  // it's expired, dismiss it (stamp the old message) and scan afresh.
+  if (!DRY_RUN) {
+    const pending = readPending();
+    if (proposalActive(pending, Date.now())) {
+      console.log("⏸ a scout idea is still awaiting your Yes/No — skipping this scan.");
+      return;
+    }
+    if (pending) {
+      clearPending();
+      if (pending.chatId && pending.messageId) {
+        await editMessageText(
+          pending.chatId,
+          pending.messageId,
+          `${pending.text || ""}\n\n⏱ Expired unanswered — dismissed.`,
+        );
+      }
+      await notify("⏱ Previous scout idea expired unanswered — dismissed. Scanning afresh.");
+    }
   }
 
   console.log("scanning… (this can take a while)");
@@ -135,21 +170,40 @@ async function main() {
   const summary = scoutSummary(ranked, top);
   console.log(`\n${summary}\n`);
 
+  const task = ideaToTask(top, { knownRepos: repos, repoBase: REPO_BASE });
+
   if (DRY_RUN) {
-    console.log("[dry-run] not pushing. Top idea task input:");
-    console.log(JSON.stringify(ideaToTask(top, { knownRepos: repos, repoBase: REPO_BASE }), null, 2));
+    console.log("[dry-run] not proposing. Top idea task input:");
+    console.log(JSON.stringify(task, null, 2));
     return;
   }
 
-  try {
-    const task = await addTask(ideaToTask(top, { knownRepos: repos, repoBase: REPO_BASE }));
-    console.log(`✓ queued task ${task.id} — "${task.title}" [${(task.tags || []).join(", ")}]`);
-    await notify(`${summary}\n\n✅ Queued to the board for the dispatcher.`);
-  } catch (e) {
-    console.error(`✗ failed to push task: ${e.message}`);
-    await notify(`🔭 Scout picked "${top.title}" but couldn't queue it: ${e.message}`);
-    process.exitCode = 1;
+  // Without Telegram there's nothing to confirm against — fall back to pushing
+  // straight to the board (the original behavior) so scout still works headless.
+  if (!telegramEnabled() || !CHAT_ID) {
+    console.warn("Telegram not configured — queuing directly, no confirmation.");
+    try {
+      const created = await addTask(task);
+      console.log(`✓ queued task ${created.id} — "${created.title}"`);
+    } catch (e) {
+      console.error(`✗ failed to push task: ${e.message}`);
+      process.exitCode = 1;
+    }
+    return;
   }
+
+  // Propose it: send the ranked summary with Yes/No buttons and park the task as
+  // the single pending proposal. The control-plane bot queues it only on a ✅ tap.
+  const id = Date.now().toString(36);
+  const body = proposalText(summary);
+  const sent = await sendMessage(CHAT_ID, body, { replyMarkup: proposalKeyboard(id) });
+  if (!sent) {
+    console.error("✗ couldn't send the Telegram proposal — not parking it.");
+    process.exitCode = 1;
+    return;
+  }
+  writePending({ id, createdAt: Date.now(), chatId: String(CHAT_ID), messageId: sent.message_id, task, text: body });
+  console.log(`📨 proposed "${top.title}" — awaiting your Yes/No (id ${id}).`);
 }
 
 main().catch((e) => {

@@ -8,14 +8,66 @@ export function telegramEnabled() {
   return Boolean(TOKEN);
 }
 
-/** Send a plain-text message to a chat. No-ops (resolves false) if unconfigured. */
-export async function sendMessage(chatId, text) {
+/**
+ * Send a message to a chat. `opts.replyMarkup` attaches an inline keyboard (the
+ * scout's Yes/No buttons). Returns the sent message object on success (truthy,
+ * so existing `if (await sendMessage(...))` callers still work) or false on
+ * failure / when unconfigured.
+ */
+export async function sendMessage(chatId, text, opts = {}) {
   if (!TOKEN || !chatId) return false;
   try {
     const res = await fetch(`${API}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+        ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    return res.ok && data && data.ok ? data.result : false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Acknowledge a tapped inline button — clears its spinner and (optionally) shows
+ * a brief toast. Telegram requires this within a few seconds of the callback.
+ */
+export async function answerCallbackQuery(id, text = "") {
+  if (!TOKEN || !id) return false;
+  try {
+    const res = await fetch(`${API}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ callback_query_id: id, ...(text ? { text } : {}) }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replace a message's text (and drop its inline keyboard, since none is sent) —
+ * used to stamp a proposal with its outcome (✅ Queued / ❌ Skipped / ⏱ Expired).
+ */
+export async function editMessageText(chatId, messageId, text) {
+  if (!TOKEN || !chatId || !messageId) return false;
+  try {
+    const res = await fetch(`${API}/editMessageText`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        disable_web_page_preview: true,
+      }),
     });
     return res.ok;
   } catch {

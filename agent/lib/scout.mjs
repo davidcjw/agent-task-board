@@ -20,6 +20,42 @@ export const NEW_PROJECT_TAG = "new-project";
 /** Cross-repo / workspace-level ideas (touch no single repo) carry this one. */
 export const WORKSPACE_TAG = "workspace";
 
+/**
+ * How long a Telegram proposal waits for your Yes/No before the next scout run
+ * auto-dismisses it as stale. Until then scout pauses (no new scans) so an
+ * unanswered idea never piles up; after it, scout moves on and scans afresh.
+ */
+export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Pure: is this stored proposal still awaiting an answer (exists + within TTL)? */
+export function proposalActive(proposal, now, ttlMs = PROPOSAL_TTL_MS) {
+  if (!proposal || !proposal.id || !Number.isFinite(proposal.createdAt)) return false;
+  return now - proposal.createdAt < ttlMs;
+}
+
+/** The inline Yes/No keyboard for a proposal (one tap → queue or skip). */
+export function proposalKeyboard(id) {
+  return {
+    inline_keyboard: [
+      [
+        { text: "✅ Queue it", callback_data: `scout:yes:${id}` },
+        { text: "❌ Skip", callback_data: `scout:no:${id}` },
+      ],
+    ],
+  };
+}
+
+/** Parse a button's callback_data back into `{ action, id }`, or null if foreign. */
+export function parseCallback(data) {
+  const m = /^scout:(yes|no):(.+)$/.exec(String(data || ""));
+  return m ? { action: m[1], id: m[2] } : null;
+}
+
+/** The proposal message body: the ranked summary plus the Yes/No ask. */
+export function proposalText(summary) {
+  return `${summary}\n\n❓ Queue this to the board? I'll do nothing unless you tap ✅.`;
+}
+
 const CATEGORIES = ["infra", "devtools", "feature", "fix", "docs", "new-project"];
 
 /** Clamp a value to an integer in [1,10], defaulting to `d` when not a number. */

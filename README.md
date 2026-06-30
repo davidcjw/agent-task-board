@@ -4,7 +4,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-157%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-168%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -126,7 +126,7 @@ agent/
   scout.mjs         Improvement scout: scan ~/code, rank ideas, queue the single best (`npm run scout`)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
-  launchd/          macOS LaunchAgent installers: whole control plane (persistent) + scout (daily 10pm)
+  launchd/          macOS LaunchAgent installers: whole control plane (persistent) + scout (every 2h)
   lib/              api.mjs (board client), telegram.mjs, prs.mjs, routes.mjs (routing + repo/PR helpers), git.mjs (worktree-isolated PR flow), scout.mjs (scan/rank helpers), message.mjs
 ```
 
@@ -135,7 +135,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 157 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank helpers, Telegram message parsing
+npm run test       # 168 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose helpers, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -293,8 +293,8 @@ AGENT_REVIEW=1 npm run agents -- --execute     # AGENT_REVIEW=0 forces it off
 
 | Knob | Default | Meaning |
 | --- | --- | --- |
-| `iterations` | `2` | Max **fix** rounds (so ≤ `iterations + 1` review passes) before opening a flagged PR |
-| `threshold` | `95` | Minimum reviewer confidence (%) to pass the gate |
+| `iterations` | `1` | Max **fix** rounds (so ≤ `iterations + 1` review passes) before opening a flagged PR |
+| `threshold` | `90` | Minimum reviewer confidence (%) to pass the gate |
 | `checks` | auto | Which `package.json` scripts to run; omit to auto-detect `lint`/`typecheck`/`test` (build excluded — too slow) |
 
 > **Cost:** each enabled task spawns up to `2 × (iterations + 1)` extra `claude` runs (reviewer + fixer per round) plus the check commands, so keep `iterations` modest. Review only runs for tasks that would open a PR (`pr: true` route + a `repo:` tag); plain questions and subagent tasks are never gated.
@@ -328,11 +328,13 @@ Key properties:
 
 ### Improvement scout (auto-fills the queue)
 
-The dispatcher *consumes* tasks; the **scout** (`agent/scout.mjs`, `npm run scout`) *produces* them. Once a day it scans **every repo under `AGENT_REPO_BASE` (~/code)** for high-leverage improvements — infra, dev tooling, features, fixes, docs, even a brand-new project when the win is big — then queues **only the single best one** for the dispatcher to pick up. You wake up to one well-chosen PR in **Review**, not a backlog of suggestions.
+The dispatcher *consumes* tasks; the **scout** (`agent/scout.mjs`, `npm run scout`) *produces* them. Every couple of hours it scans **every repo under `AGENT_REPO_BASE` (~/code)** for high-leverage improvements — infra, dev tooling, features, fixes, docs, even a brand-new project when the win is big — ranks them, and **proposes only the single best one to you on Telegram with Yes/No buttons**. Tap ✅ and it's queued for the dispatcher; tap ❌ (or ignore it) and nothing runs. You stay the gatekeeper — no backlog of suggestions, and nothing queued behind your back.
 
 ```
-scan ~/code  →  brainstorm + score EVERY idea  →  rank by ICE  →  queue only #1  →  dispatcher → PR → Review
+scan ~/code  →  brainstorm + score EVERY idea  →  rank by ICE  →  propose #1 on Telegram  →  ✅ → queue → dispatcher → PR → Review
 ```
+
+**While a proposal is unanswered it pauses** — the next scheduled run skips scanning so ideas never pile up. If you don't reply for 24h the offer auto-expires and the next run scans afresh; a tap on a stale/superseded message is politely rejected. The pending offer lives in `.data/scout-pending.json`, and the control-plane Telegram bot is what acts on your tap — so keep the control plane running.
 
 It runs a fresh `claude -p` over the workspace and asks it to score each idea on three 1–10 axes — **impact**, **confidence**, **ease** — but **the ranking is computed in code, not taken from the model**: `score = impact × confidence × ease` (the classic ICE score), so it's deterministic and reproducible. The winner becomes a task three ways:
 
@@ -342,21 +344,24 @@ It runs a fresh `claude -p` over the workspace and asks it to score each idea on
 
 Every scout task carries a `scout` tag for provenance.
 
+Every scout task carries a `scout` tag for provenance. (With **no Telegram configured** the scout falls back to pushing the top idea straight to the board, the original behavior.)
+
 ```bash
-npm run scout                 # scan → rank → queue the top idea (board must be up to accept it)
-npm run scout -- --dry-run    # scan → rank → print the ranking + task input, push nothing
+npm run scout                 # scan → rank → propose the top idea on Telegram (board + bot must be up)
+npm run scout -- --dry-run    # scan → rank → print the ranking + task input, propose nothing
 npm run scout -- --print-prompt   # dump the scan prompt and exit (no model call)
 ```
 
-**Run it at 10pm automatically** with a one-shot LaunchAgent (macOS):
+**Run it every 2 hours automatically** with a LaunchAgent (macOS) — it fires at 08:00–22:00 and stays silent overnight:
 
 ```bash
-npm run scout:install                    # fires daily at 22:00
-npm run scout:install -- --hour 21 --minute 30   # retime it
-npm run scout:uninstall                  # remove it
+npm run scout:install                          # every 2h, 08:00–22:00
+npm run scout:install -- --start 9 --end 21 --every 3   # retune the window
+npm run scout:install -- --minute 15           # fire at :15 past
+npm run scout:uninstall                        # remove it
 ```
 
-The scout runs no board of its own — it POSTs the queued task to whatever board is already up, so keep the control plane running (`npm run agents:install`) for the 10pm push to land. Pure scan/rank helpers are unit-tested in [`agent/lib/scout.test.mjs`](agent/lib/scout.test.mjs); env knobs: `SCOUT_MODEL`, `SCOUT_TIMEOUT` (ms, default 30 min). 
+The scout runs no board of its own — on your ✅ the control-plane bot POSTs the task to whatever board is up, so keep the control plane running (`npm run agents:install`) to field the taps and accept the queue. Pure scan/rank/propose helpers are unit-tested in [`agent/lib/scout.test.mjs`](agent/lib/scout.test.mjs); env knobs: `SCOUT_MODEL`, `SCOUT_TIMEOUT` (ms, default 30 min). 
 
 ### MCP & Telegram
 

@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 // scout-install.mjs — install/uninstall a macOS LaunchAgent that fires the
-// Improvement Scout (agent/scout.mjs) once a day at a set time (10pm default).
-// Unlike the control-plane agent this is a one-shot: it runs, pushes the top
-// idea, and exits — so it uses StartCalendarInterval (NOT KeepAlive/RunAtLoad).
+// Improvement Scout (agent/scout.mjs) every 2 hours during waking hours
+// (08:00–22:00 by default, silent overnight). Each fire is a one-shot: scout
+// runs, proposes the top idea on Telegram, and exits — so this uses an array of
+// StartCalendarInterval entries (NOT KeepAlive/RunAtLoad). A long-sleeping loop
+// would drift and die on reboot; calendar entries survive both.
 //
-// It does NOT run a board; it POSTs the queued task to whatever board is already
-// up (the control plane / `npm run agents`). Make sure that's running at the
-// scheduled time, or the push will fail (the scout logs + Telegrams the error).
+// It does NOT run a board; the scout POSTs (on your ✅) to whatever board is
+// already up (the control plane / `npm run agents`), whose Telegram bot also
+// fields the Yes/No taps. Make sure that's running, or a ✅ can't be queued.
 //
-//   node agent/launchd/scout-install.mjs                 # install at 22:00
-//   node agent/launchd/scout-install.mjs --hour 21 --minute 30
-//   node agent/launchd/scout-install.mjs --dry-run       # scheduled run previews only
-//   node agent/launchd/scout-install.mjs --print         # print the plist and exit
-//   node agent/launchd/scout-install.mjs --uninstall     # unload + remove
+//   node agent/launchd/scout-install.mjs                       # every 2h, 08:00–22:00
+//   node agent/launchd/scout-install.mjs --start 9 --end 21 --every 3
+//   node agent/launchd/scout-install.mjs --minute 15           # fire at :15 past
+//   node agent/launchd/scout-install.mjs --dry-run             # scheduled runs preview only
+//   node agent/launchd/scout-install.mjs --print               # print the plist and exit
+//   node agent/launchd/scout-install.mjs --uninstall           # unload + remove
 //
-// Or via npm: `npm run scout:install [-- --hour 21]` / `npm run scout:uninstall`.
+// Or via npm: `npm run scout:install [-- --start 9]` / `npm run scout:uninstall`.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -50,7 +53,14 @@ function xml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function buildPlist({ program, dataDir, pathEnv, hour, minute }) {
+function buildPlist({ program, dataDir, pathEnv, times }) {
+  const intervals = times
+    .map(
+      (t) =>
+        `    <dict>\n      <key>Hour</key>\n      <integer>${t.hour}</integer>\n` +
+        `      <key>Minute</key>\n      <integer>${t.minute}</integer>\n    </dict>`,
+    )
+    .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,12 +79,9 @@ ${program.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
     <string>${xml(pathEnv)}</string>
   </dict>
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>${hour}</integer>
-    <key>Minute</key>
-    <integer>${minute}</integer>
-  </dict>
+  <array>
+${intervals}
+  </array>
   <key>StandardOutPath</key>
   <string>${xml(path.join(dataDir, "scout.out.log"))}</string>
   <key>StandardErrorPath</key>
@@ -85,8 +92,14 @@ ${program.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
 }
 
 function install() {
-  const hour = Math.max(0, Math.min(23, Number(val("--hour", "22")) || 0));
+  // Active window: fire every `--every` hours from `--start` to `--end` (inclusive)
+  // at `--minute` past. Default: every 2h, 08:00–22:00 — silent 23:00–07:00.
   const minute = Math.max(0, Math.min(59, Number(val("--minute", "0")) || 0));
+  const start = Math.max(0, Math.min(23, Number(val("--start", "8")) || 0));
+  const end = Math.max(0, Math.min(23, Number(val("--end", "22")) || 0));
+  const every = Math.max(1, Math.min(24, Number(val("--every", "2")) || 1));
+  const times = [];
+  for (let h = start; h <= end; h += every) times.push({ hour: h, minute });
   // Flags forwarded verbatim to scout.mjs.
   const passthrough = ["--dry-run"].filter(has);
   const dataDir = path.join(repoRoot, ".data");
@@ -107,7 +120,7 @@ function install() {
     "/bin",
   ].join(":");
 
-  const plist = buildPlist({ program, dataDir, pathEnv, hour, minute });
+  const plist = buildPlist({ program, dataDir, pathEnv, times });
 
   if (has("--print")) {
     console.log(plist);
@@ -125,12 +138,12 @@ function install() {
     console.error(`  Plist written to ${plistPath} — load it manually or re-run.`);
     process.exit(1);
   }
-  const hh = String(hour).padStart(2, "0");
   const mm = String(minute).padStart(2, "0");
-  console.log(`✓ installed scout LaunchAgent ${LABEL} — fires daily at ${hh}:${mm}${has("--dry-run") ? " (dry-run)" : ""}`);
+  const when = times.map((t) => `${String(t.hour).padStart(2, "0")}:${mm}`).join(", ");
+  console.log(`✓ installed scout LaunchAgent ${LABEL} — fires at ${when}${has("--dry-run") ? " (dry-run)" : ""}`);
   console.log(`  plist: ${plistPath}`);
   console.log(`  logs:  ${path.join(dataDir, "scout.{out,err}.log")}`);
-  console.log(`  needs a board running at that time (npm run agents / control plane) to accept the queued task.`);
+  console.log(`  needs a board + Telegram bot running (npm run agents / control plane) to accept your ✅.`);
 }
 
 if (process.platform !== "darwin") {

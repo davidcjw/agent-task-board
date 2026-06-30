@@ -3,8 +3,13 @@ import {
   iceScore,
   ideaToTask,
   NEW_PROJECT_TAG,
+  parseCallback,
   parseScout,
   projectSlug,
+  PROPOSAL_TTL_MS,
+  proposalActive,
+  proposalKeyboard,
+  proposalText,
   rankIdeas,
   scoutSummary,
   SCOUT_TAG,
@@ -162,5 +167,48 @@ describe("scoutSummary", () => {
 
   it("handles the empty case", () => {
     expect(scoutSummary([], null)).toContain("no actionable improvements");
+  });
+});
+
+describe("proposalActive", () => {
+  const now = 1_000_000_000;
+  it("is active within the TTL", () => {
+    expect(proposalActive({ id: "a", createdAt: now }, now)).toBe(true);
+    expect(proposalActive({ id: "a", createdAt: now }, now + PROPOSAL_TTL_MS - 1)).toBe(true);
+  });
+  it("is inactive at/after the TTL", () => {
+    expect(proposalActive({ id: "a", createdAt: now }, now + PROPOSAL_TTL_MS)).toBe(false);
+  });
+  it("treats null / malformed proposals as inactive", () => {
+    expect(proposalActive(null, now)).toBe(false);
+    expect(proposalActive({ id: "a" }, now)).toBe(false);
+    expect(proposalActive({ createdAt: now }, now)).toBe(false);
+  });
+  it("honors a custom ttl", () => {
+    expect(proposalActive({ id: "a", createdAt: now }, now + 5, 10)).toBe(true);
+    expect(proposalActive({ id: "a", createdAt: now }, now + 15, 10)).toBe(false);
+  });
+});
+
+describe("proposalKeyboard / parseCallback", () => {
+  it("builds a Yes/No keyboard whose callbacks round-trip through parseCallback", () => {
+    const kb = proposalKeyboard("abc123");
+    const [[yes, no]] = kb.inline_keyboard;
+    expect(parseCallback(yes.callback_data)).toEqual({ action: "yes", id: "abc123" });
+    expect(parseCallback(no.callback_data)).toEqual({ action: "no", id: "abc123" });
+  });
+  it("rejects foreign or malformed callback data", () => {
+    expect(parseCallback("queue:yes:abc")).toBeNull();
+    expect(parseCallback("scout:maybe:abc")).toBeNull();
+    expect(parseCallback("")).toBeNull();
+    expect(parseCallback(null)).toBeNull();
+  });
+});
+
+describe("proposalText", () => {
+  it("appends the Yes/No ask to the summary", () => {
+    const out = proposalText("🔭 ranked 3 ideas");
+    expect(out).toContain("🔭 ranked 3 ideas");
+    expect(out).toMatch(/tap ✅/);
   });
 });

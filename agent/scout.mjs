@@ -22,6 +22,8 @@
 //      BOARD_URL / AGENT_TOKEN (board client), TELEGRAM_* (notifications).
 
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { addTask } from "./lib/api.mjs";
 import { clearPending, readPending, writePending } from "./lib/pending.mjs";
 import { listRepos, REPO_BASE } from "./lib/repos.mjs";
@@ -162,7 +164,24 @@ async function main() {
   const top = ranked[0] || null;
 
   if (!top) {
-    console.warn("No actionable ideas parsed from the scan.");
+    // parseScout failed closed — persist the raw scan text so a recurrence is
+    // diagnosable instead of opaque (the model may have wrapped the JSON in
+    // prose, truncated it, or returned an empty result).
+    let savedTo = "";
+    try {
+      const file = path.join(process.cwd(), ".data", "scout-last-scan.txt");
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, text);
+      savedTo = file;
+    } catch {
+      /* best-effort — don't let logging failure mask the real outcome */
+    }
+    const preview = text.slice(0, 500).replace(/\s+/g, " ").trim();
+    console.warn(
+      `No actionable ideas parsed from the scan (${text.length} chars of model output).` +
+        (savedTo ? ` Raw output saved to ${savedTo}.` : "") +
+        (preview ? `\n  preview: ${preview}${text.length > 500 ? "…" : ""}` : " (empty output)"),
+    );
     await notify("🔭 Scout ran but found no actionable improvements this time.");
     return;
   }

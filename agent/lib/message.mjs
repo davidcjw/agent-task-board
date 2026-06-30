@@ -46,3 +46,49 @@ export function parseMessage(text) {
   const title = (body.split("\n")[0] || "task").replace(/\s+/g, " ").slice(0, 80);
   return { title, prompt: body, agent, tags, repoSlug, status: "queued" };
 }
+
+// ── outbound: the Telegram review snippet ────────────────────────────────────
+
+// A line that opens a new section: a markdown heading (`## X`), a bold label
+// (`**Verification:**`), or the appended review block (`🔍 Review:`). Used to
+// find where the "Changes" section ends.
+const SECTION_RE = /^\s*(#{1,6}\s+\S|\*\*[^*]+:\*\*\s*$|🔍 Review:)/;
+// The "Changes" section header in any of the forms agents emit:
+// `## Changes`, `### Changes:`, `**Changes:**`, or a bare `Changes:` line.
+const CHANGES_RE = /^\s*(#{1,6}\s*)?\*{0,2}\s*changes\b/i;
+
+/** Strip a "Changes" section (header through the next section / end) from prose. */
+function stripChanges(prose) {
+  const lines = prose.split("\n");
+  const start = lines.findIndex((l) => CHANGES_RE.test(l));
+  if (start < 0) return prose;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (SECTION_RE.test(lines[i]) && !CHANGES_RE.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Build the Telegram review snippet from a task result: drop the noisy
+ * file-by-file "Changes" section (too much to read on a phone) but always keep
+ * the trailing `🔍 Review:` verdict block. Only the prose is length-capped — the
+ * review block is never truncated, so the human always sees why it was flagged.
+ */
+export function notifyBody(result, max = 600) {
+  const text = String(result || "")
+    .replace(/\n*BOARD_PR:\s*\S+/g, "")
+    .trim();
+  const idx = text.search(/^🔍 Review:/m);
+  const review = idx >= 0 ? text.slice(idx).trim() : "";
+  const prose = stripChanges((idx >= 0 ? text.slice(0, idx) : text).trim());
+  const cap = review ? Math.max(0, max - review.length - 2) : max;
+  const head = prose.length > cap ? prose.slice(0, cap).trim() + "…" : prose;
+  return [head, review].filter(Boolean).join("\n\n");
+}

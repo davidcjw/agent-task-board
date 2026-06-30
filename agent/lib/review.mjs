@@ -35,8 +35,8 @@ export function shouldReview(route, task, forced) {
 export function reviewConfig(route) {
   const r = route && route.review;
   const cfg = r && typeof r === "object" ? r : {};
-  const iterations = Number.isFinite(cfg.iterations) ? Math.max(0, Math.floor(cfg.iterations)) : 2;
-  const threshold = Number.isFinite(cfg.threshold) ? Math.max(0, Math.min(100, cfg.threshold)) : 95;
+  const iterations = Number.isFinite(cfg.iterations) ? Math.max(0, Math.floor(cfg.iterations)) : 1;
+  const threshold = Number.isFinite(cfg.threshold) ? Math.max(0, Math.min(100, cfg.threshold)) : 90;
   const checks = Array.isArray(cfg.checks) ? cfg.checks : null;
   return { iterations, threshold, checks };
 }
@@ -176,13 +176,15 @@ export function reviewVerdict({ checks, review, threshold = 95 }) {
 /** The human-facing review block folded into the task result (card + Telegram). */
 export function reviewSummary(review, { flagged = false, attempts = 0 } = {}) {
   const c = (review && review.confidence) || 0;
-  const b = ((review && review.blocking) || []).length;
-  const m = ((review && review.minor) || []).length;
-  const lines = [`🔍 Review: ${c}% confidence · ${b} blocking · ${m} minor · ${attempts} pass(es)`];
-  if (flagged) {
+  const blocking = (review && review.blocking) || [];
+  const minor = (review && review.minor) || [];
+  const lines = [
+    `🔍 Review: ${c}% confidence · ${blocking.length} blocking · ${minor.length} minor · ${attempts} pass(es)`,
+  ];
+  if (flagged)
     lines.push("⚠ Flagged: opened below the confidence gate — needs a closer human look.");
-    for (const x of (review && review.blocking) || []) lines.push(`  • ${x}`);
-  }
+  for (const x of blocking) lines.push(`  ⛔ ${x}`);
+  for (const x of minor) lines.push(`  • ${x}`);
   return lines.join("\n");
 }
 

@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { claimNext, patchTask, reportResult } from "./lib/api.mjs";
 import { createWorktree, finishPr, removeWorktree } from "./lib/git.mjs";
+import { notifyBody } from "./lib/message.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
 import {
@@ -153,7 +154,7 @@ async function runWithPr(route, runTask, task) {
     // partial remote branch that never existed.
     if (agent.timedOut) return { result: agent.result, error: true, timedOut: true };
     // Independent pre-PR gate: a fresh reviewer + the repo's own checks iterate fixes
-    // (in this same worktree) until the change clears the 95% gate or the cap is hit;
+    // (in this same worktree) until the change clears the confidence gate or the cap is hit;
     // a flagged result still opens a PR, just marked for a closer human look.
     let note = "";
     if (shouldReview(route, task, REVIEW_FORCED)) {
@@ -235,8 +236,8 @@ async function processTask(task) {
   // Surface the PR link as its own line (Telegram auto-links it) so it's always
   // clickable — never lost to the snippet cap — and drop the raw BOARD_PR marker.
   const prLine = prUrl ? `\n🔗 Review PR: ${prUrl}` : "";
-  const body = outcome.result.replace(/\n*BOARD_PR:\s*\S+/g, "").trim();
-  const snippet = body.length > 500 ? body.slice(0, 500) + "…" : body;
+  // Drop the file-by-file "Changes" section but always keep the review verdict.
+  const snippet = notifyBody(outcome.result);
   const landed = status === "done" ? "(moved to Done)" : "(in Review for your approval)";
   console.log(`${outcome.error ? "✗" : "✓"} ${task.title} → ${status}${prUrl ? ` ${prUrl}` : ""}`);
   await notify(`${head}${prLine}\n\n${snippet}\n\n${landed}`);

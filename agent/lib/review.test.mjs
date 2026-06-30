@@ -32,8 +32,8 @@ describe("shouldReview", () => {
 });
 
 describe("reviewConfig", () => {
-  it("defaults a bare review:true to 2 iterations / 95% / auto checks", () => {
-    expect(reviewConfig({ review: true })).toEqual({ iterations: 2, threshold: 95, checks: null });
+  it("defaults a bare review:true to 1 iteration / 90% / auto checks", () => {
+    expect(reviewConfig({ review: true })).toEqual({ iterations: 1, threshold: 90, checks: null });
   });
 
   it("reads overrides and clamps them", () => {
@@ -157,15 +157,20 @@ describe("formatChecks", () => {
 });
 
 describe("reviewSummary", () => {
-  it("is a one-line stat block when not flagged", () => {
-    const out = reviewSummary({ confidence: 96, blocking: [], minor: ["n"] }, { attempts: 1 });
+  it("leads with the stat line and lists minor findings even when not flagged", () => {
+    const out = reviewSummary({ confidence: 96, blocking: [], minor: ["tidy the import"] }, { attempts: 1 });
     expect(out).toMatch(/96% confidence/);
     expect(out).not.toMatch(/Flagged/);
+    expect(out).toContain("• tidy the import");
   });
 
-  it("adds a flagged warning and lists blockers when flagged", () => {
-    const out = reviewSummary({ confidence: 60, blocking: ["bug a"], minor: [] }, { flagged: true, attempts: 3 });
+  it("adds a flagged warning and lists both blocking and minor findings when flagged", () => {
+    const out = reviewSummary(
+      { confidence: 60, blocking: ["bug a"], minor: ["nit b"] },
+      { flagged: true, attempts: 3 },
+    );
     expect(out).toMatch(/⚠ Flagged/);
-    expect(out).toContain("bug a");
+    expect(out).toContain("⛔ bug a");
+    expect(out).toContain("• nit b");
   });
 });

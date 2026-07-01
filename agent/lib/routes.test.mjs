@@ -3,6 +3,7 @@ import {
   AUTO_RETRY_TAG,
   branchName,
   implementPrompt,
+  isRevise,
   matchRepoSlug,
   missingRepoTag,
   normalizeRepoKey,
@@ -13,6 +14,9 @@ import {
   resolveCwd,
   resolveRepoPath,
   resultStatus,
+  resumeRoute,
+  REVISE_TAG,
+  revisePrompt,
   shouldOpenPr,
   shouldRequeue,
   worktreePath,
@@ -181,6 +185,55 @@ describe("implementPrompt", () => {
     expect(out).toMatch(/current working directory/i);
     expect(out).toMatch(/absolute/i);
     expect(out).toMatch(/never `cd`/i);
+  });
+});
+
+describe("isRevise", () => {
+  it("detects the revise tag case-insensitively", () => {
+    expect(isRevise({ tags: ["repo:foo", REVISE_TAG] })).toBe(true);
+    expect(isRevise({ tags: ["repo:foo", "Revise"] })).toBe(true);
+    expect(isRevise({ tags: ["repo:foo"] })).toBe(false);
+    expect(isRevise({})).toBe(false);
+  });
+});
+
+describe("resumeRoute", () => {
+  const claude = { command: "claude", args: ["-p", "{prompt}", "--output-format", "json"] };
+  it("adds --resume <id> to a plain claude route", () => {
+    const out = resumeRoute(claude, "sess-1");
+    expect(out.args).toEqual(["-p", "{prompt}", "--output-format", "json", "--resume", "sess-1"]);
+    expect(claude.args).not.toContain("--resume"); // original untouched
+  });
+  it("returns the route unchanged when there is no session id (fresh fallback)", () => {
+    expect(resumeRoute(claude, undefined)).toBe(claude);
+    expect(resumeRoute(claude, "")).toBe(claude);
+  });
+  it("does not resume non-claude or subagent routes", () => {
+    const echo = { command: "echo", args: ["x"] };
+    expect(resumeRoute(echo, "sess-1")).toBe(echo);
+    const agent = { command: "claude", args: ["-p", "{prompt}", "--agent", "kb"] };
+    expect(resumeRoute(agent, "sess-1")).toBe(agent);
+  });
+});
+
+describe("revisePrompt", () => {
+  const task = { prompt: "add a favicon", reviseNote: "CI fails on lint — fix the unused import" };
+  it("carries the correction and original task, edit-only + worktree-confined", () => {
+    const out = revisePrompt(task);
+    expect(out).toMatch(/Correction to apply: CI fails on lint/);
+    expect(out).toMatch(/Original task: add a favicon/);
+    expect(out).toMatch(/do NOT run git/i);
+    expect(out).toMatch(/never `cd`/i);
+    expect(out).not.toMatch(/conflict marker/i); // no conflict → no resolve instructions
+  });
+  it("adds conflict-resolution instructions when a base merge conflicted", () => {
+    const out = revisePrompt(task, { mergeConflict: true });
+    expect(out).toMatch(/conflict marker/i);
+    expect(out).toMatch(/<<<<<<</);
+  });
+  it("handles a missing note gracefully", () => {
+    const out = revisePrompt({ prompt: "x" });
+    expect(out).toMatch(/none provided/i);
   });
 });
 

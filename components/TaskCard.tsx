@@ -13,6 +13,7 @@ import { Text } from "./ds";
 import {
   ArchiveIcon,
   CheckIcon,
+  RewindIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronUpIcon,
@@ -55,6 +56,8 @@ export interface TaskCardCallbacks {
   onMove: (task: Task, dir: -1 | 1) => void;
   onArchive: (task: Task) => void;
   onUnarchive: (task: Task) => void;
+  /** Send a Review card back to Queued with a correction note. */
+  onRevise: (task: Task) => void;
 }
 
 interface CardBodyProps extends TaskCardCallbacks {
@@ -212,6 +215,7 @@ export function TaskCardBody({
   onMove,
   onArchive,
   onUnarchive,
+  onRevise,
 }: CardBodyProps) {
   const [copied, setCopied] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
@@ -435,6 +439,11 @@ export function TaskCardBody({
             <IconButton label="Edit task" onClick={() => onEdit(task)}>
               <PencilIcon size={15} />
             </IconButton>
+            {task.status === "review" && (
+              <IconButton label="Send back for revision" onClick={() => onRevise(task)}>
+                <RewindIcon size={15} />
+              </IconButton>
+            )}
             {compact && (
               <IconButton
                 label={archived ? "Restore" : "Archive"}

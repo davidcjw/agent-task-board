@@ -48,8 +48,8 @@ export async function claimNext({ agent, tag, worker } = {}) {
   return data.task; // may be null when the queue is empty
 }
 
-export async function reportResult(id, { result, error = false, status = "review" } = {}) {
-  const data = await request("POST", `/api/tasks/${id}/result`, { result, error, status });
+export async function reportResult(id, { result, error = false, status = "review", sessionId } = {}) {
+  const data = await request("POST", `/api/tasks/${id}/result`, { result, error, status, sessionId });
   return data.task;
 }
 

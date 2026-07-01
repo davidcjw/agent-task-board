@@ -26,6 +26,19 @@ export interface Task {
   result?: string;
   /** True if the agent run failed; pairs with a result describing the error. */
   error?: boolean;
+  /**
+   * The runner (Claude Code) session id that produced `result`, captured from the
+   * agent's JSON output. Lets a follow-up run resume that exact session — with its
+   * full implementation context — instead of starting cold (used by the planned
+   * revise/rebase flow, and available to the review-gate fixer).
+   */
+  sessionId?: string;
+  /**
+   * The human's correction when a task is sent back from Review for another pass
+   * (paired with the `revise` tag). The dispatcher feeds this to the resumed
+   * session as the fix instruction; the canonical `prompt` is left untouched.
+   */
+  reviseNote?: string;
   /** Set when archived (hidden from the lane); cleared on restore. */
   archivedAt?: number;
   /**
@@ -56,5 +69,6 @@ export interface TaskInput {
   status?: Status;
 }
 
-/** A patch for updating a task: editable input fields plus the archive toggle. */
-export type TaskPatch = Partial<TaskInput> & { archived?: boolean };
+/** A patch for updating a task: editable input fields plus the archive toggle
+ *  and the revise-note stamp (set when a Review card is sent back). */
+export type TaskPatch = Partial<TaskInput> & { archived?: boolean; reviseNote?: string };

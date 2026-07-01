@@ -6,6 +6,11 @@ import type { BoardState, Status, Task, TaskInput, TaskPatch } from "./types";
 
 export const SCHEMA_VERSION = 1;
 
+/** Tag marking a task sent back from Review for another pass. The dispatcher
+ *  uses it to resume the original session and rebase (kept in sync with the
+ *  dispatcher's own literal). */
+export const REVISE_TAG = "revise";
+
 /** An empty board with all four columns present. */
 export function emptyState(): BoardState {
   return {
@@ -100,6 +105,7 @@ export function updateTask(
     agent: patch.agent !== undefined ? patch.agent.trim() : existing.agent,
     tags: patch.tags !== undefined ? normalizeTags(patch.tags) : existing.tags,
     notes: patch.notes !== undefined ? patch.notes : existing.notes,
+    reviseNote: patch.reviseNote !== undefined ? patch.reviseNote : existing.reviseNote,
     archivedAt:
       patch.archived === undefined ? existing.archivedAt : patch.archived ? now : undefined,
     updatedAt: now,
@@ -110,6 +116,21 @@ export function updateTask(
     next = moveTask(next, id, nextStatus, 0, now);
   }
   return next;
+}
+
+/**
+ * Build the patch that sends a Review task back for another pass: return it to
+ * Queued, add the `revise` tag (deduped by `updateTask`'s tag normalization),
+ * and stamp the human's correction. `sessionId`, `result`, and `createdAt` are
+ * left intact — so the dispatcher can resume the original session and FIFO
+ * re-picks the task next.
+ */
+export function revisePatch(task: Task, note: string): TaskPatch {
+  return {
+    status: "queued",
+    tags: [...task.tags, REVISE_TAG],
+    reviseNote: note.trim(),
+  };
 }
 
 /** Remove a task entirely. */
@@ -254,13 +275,16 @@ export function setResult(
   state: BoardState,
   id: string,
   result: string,
-  options: { toStatus?: Status; error?: boolean } = {},
+  options: { toStatus?: Status; error?: boolean; sessionId?: string } = {},
   now = Date.now(),
 ): BoardState {
   const task = state.tasks[id];
   if (!task) return state;
   const toStatus = options.toStatus ?? "review";
   const withResult: Task = { ...task, result, error: options.error ?? false, updatedAt: now };
+  // Persist the runner's session id when the run reported one, so a later run can
+  // resume it; a run with no session id leaves any previously-captured id intact.
+  if (options.sessionId) withResult.sessionId = options.sessionId;
   let next: BoardState = { ...state, tasks: { ...state.tasks, [id]: withResult } };
   if (toStatus !== task.status) next = moveTask(next, id, toStatus, 0, now);
   return next;

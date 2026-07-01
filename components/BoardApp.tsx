@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { STATUSES } from "@/lib/columns";
-import { isArchived, tasksForColumn } from "@/lib/board";
+import { isArchived, revisePatch, tasksForColumn } from "@/lib/board";
 import { exportState, importState } from "@/lib/storage";
 import type { BoardState, Status, Task } from "@/lib/types";
 import { useBoard } from "@/lib/useBoard";
@@ -11,6 +11,7 @@ import { Board } from "./Board";
 import { EmptyState } from "./EmptyState";
 import { TaskModal } from "./TaskModal";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ReviseDialog } from "./ReviseDialog";
 import { Toasts, useToasts } from "./Toasts";
 import { moveDir } from "./TaskCard";
 
@@ -32,8 +33,10 @@ export function BoardApp() {
   const [creating, setCreating] = useState<Status | null>(null);
   const [editing, setEditing] = useState<Task | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Task | null>(null);
+  const [revising, setRevising] = useState<Task | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const modalOpen = creating !== null || editing !== null || confirmDelete !== null || confirmClear;
+  const modalOpen =
+    creating !== null || editing !== null || confirmDelete !== null || revising !== null || confirmClear;
 
   // Keep timers live: tick every second while something is running. The setState
   // lives in the interval callback (not the effect body) so it stays cheap.
@@ -123,6 +126,20 @@ export function BoardApp() {
     [board, toasts],
   );
 
+  const handleRevise = useCallback(
+    (note: string) => {
+      if (!revising) return;
+      const task = revising;
+      setRevising(null);
+      snapshotAnd(
+        () => board.updateTask(task.id, revisePatch(task, note)),
+        `Sent “${task.title}” back to Queued`,
+        state,
+      );
+    },
+    [revising, board, state, snapshotAnd],
+  );
+
   const handleDelete = useCallback(() => {
     if (!confirmDelete) return;
     const prev = state;
@@ -210,6 +227,7 @@ export function BoardApp() {
             onMove={handleMove}
             onArchive={handleArchive}
             onUnarchive={handleUnarchive}
+            onRevise={(t) => setRevising(t)}
           />
         )}
       </main>
@@ -256,6 +274,14 @@ export function BoardApp() {
           message={`“${confirmDelete.title}” will be removed from the board. You can undo this right after.`}
           onConfirm={handleDelete}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {revising !== null && (
+        <ReviseDialog
+          title={`Send “${revising.title}” back?`}
+          onConfirm={handleRevise}
+          onCancel={() => setRevising(null)}
         />
       )}
 

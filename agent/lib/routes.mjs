@@ -185,6 +185,65 @@ export function prBody({ title, files }) {
   return lines.join("\n");
 }
 
+/**
+ * Tag marking a task sent back from Review for another pass (kept in sync with
+ * the board's `REVISE_TAG` in lib/board.ts). Its presence — on a PR route with a
+ * `repo:` tag — routes the task through the dispatcher's revise/rebase flow.
+ */
+export const REVISE_TAG = "revise";
+
+/** Is this a revise task (sent back from Review with a correction)? */
+export function isRevise(task) {
+  return (task && task.tags ? task.tags : []).some((t) => t.toLowerCase() === REVISE_TAG);
+}
+
+/**
+ * Clone a `claude` route so the agent resumes an existing session (its full
+ * implementation context) instead of starting cold. Adds `--resume <sessionId>`
+ * when we have a session id and the route is a plain `claude -p` run. Falls back
+ * to the route unchanged (a fresh agent) when there's no session id or the route
+ * can't resume (non-claude, or a `--agent` subagent) — the revise flow still
+ * works from the checked-out branch + the correction note, just without recall.
+ */
+export function resumeRoute(route, sessionId) {
+  if (!sessionId || !route || route.command !== "claude") return route;
+  const rargs = route.args || [];
+  if (rargs.includes("--resume") || rargs.includes("-r") || rargs.includes("--agent")) return route;
+  return { ...route, args: [...rargs, "--resume", sessionId] };
+}
+
+/**
+ * Prompt for a revise pass: the agent (resuming its original session, in a
+ * worktree checked out on the existing PR branch) applies the human's correction
+ * and — when the dispatcher's merge of the latest base left conflict markers —
+ * resolves them. Same edit-only, worktree-confined backstop as implementPrompt.
+ */
+export function revisePrompt(task, { mergeConflict = false } = {}) {
+  const note = (task && task.reviseNote ? task.reviseNote : "").trim();
+  const lines = [
+    "You previously worked on the task below and opened a pull request; it has been sent " +
+      "back for another pass. You are in the SAME isolated git worktree, now checked out on " +
+      "that PR's branch, so your earlier changes are already here. Follow these rules strictly:",
+    "- Work ONLY inside the current working directory. Never `cd` elsewhere.",
+    "- Treat every path as relative to here. If the correction names an ABSOLUTE path " +
+      "(e.g. /Users/<name>/code/<repo>/…), ignore the absolute prefix and act on the matching " +
+      "path inside the current working directory — never touch the original checkout.",
+    "- Make code changes ONLY. Do NOT run git (no add/commit/branch/push) and do NOT open a " +
+      "pull request; committing, pushing, and updating the PR are handled automatically after " +
+      "you finish. Leave your changes uncommitted in the working tree.",
+  ];
+  if (mergeConflict) {
+    lines.push(
+      "- The latest base branch was merged in and left MERGE CONFLICTS. Resolve every conflict " +
+        "marker (`<<<<<<<`, `=======`, `>>>>>>>`) in the affected files, keeping both sides' intent " +
+        "correct. Leave NO conflict markers behind.",
+    );
+  }
+  lines.push("", note ? `Correction to apply: ${note}` : "Correction: (none provided — address the review feedback / failing checks.)");
+  lines.push("", `Original task: ${(task && task.prompt) || ""}`);
+  return lines.join("\n");
+}
+
 /** Wrap a task prompt so the agent ONLY edits files — the dispatcher does the
  *  commit/push/PR afterward, so the agent must not touch git itself. */
 export function implementPrompt(prompt) {

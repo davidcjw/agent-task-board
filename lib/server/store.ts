@@ -135,7 +135,7 @@ export const store = {
   result(
     id: string,
     result: string,
-    options: { toStatus?: Status; error?: boolean },
+    options: { toStatus?: Status; error?: boolean; sessionId?: string },
   ): Promise<Task | null> {
     return withLock(async () => {
       const board = setResult(await readLocked(), id, result, options);

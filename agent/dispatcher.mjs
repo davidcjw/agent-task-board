@@ -18,7 +18,14 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { claimNext, getBoard, patchTask, reportResult } from "./lib/api.mjs";
-import { createWorktree, finishPr, killGroup, removeWorktree } from "./lib/git.mjs";
+import {
+  createReviseWorktree,
+  createWorktree,
+  finishPr,
+  finishRevise,
+  killGroup,
+  removeWorktree,
+} from "./lib/git.mjs";
 import { notifyBody } from "./lib/message.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
@@ -26,10 +33,13 @@ import {
   AUTO_RETRY_TAG,
   branchName,
   implementPrompt,
+  isRevise,
   missingRepoTag,
   repoFromTags,
   resolveCwd,
   resultStatus,
+  resumeRoute,
+  revisePrompt,
   shouldOpenPr,
   shouldRequeue,
 } from "./lib/routes.mjs";
@@ -140,13 +150,17 @@ function runCommand(route, task, cwdOverride, { signal } = {}) {
       clear();
       let result = out.trim();
       let error = code !== 0;
-      // claude --output-format json → { result, is_error }
+      let sessionId;
+      // claude --output-format json → { result, is_error, session_id }
       try {
         const json = JSON.parse(out);
         if (json && typeof json.result === "string") {
           result = json.result;
           error = error || Boolean(json.is_error);
         }
+        // Capture the agent's session id so a follow-up run can resume this exact
+        // session (with its full implementation context) instead of starting cold.
+        if (json && typeof json.session_id === "string") sessionId = json.session_id;
       } catch {
         /* not JSON — use raw stdout */
       }
@@ -158,7 +172,7 @@ function runCommand(route, task, cwdOverride, { signal } = {}) {
             : timedOut
               ? `(timed out after ${Math.round(TIMEOUT / 60000)}m)`
               : `(no output, exit ${code})`);
-      resolve({ result, error, timedOut, canceled });
+      resolve({ result, error, timedOut, canceled, sessionId });
     });
   });
 }
@@ -200,11 +214,67 @@ async function runWithPr(route, runTask, task, { signal } = {}) {
     }
     // A cancel during the review gate still bails before opening the PR.
     if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true };
+    // Carry the implementer's session id (not the reviewer/fixer's) up to the
+    // board on every Review-bound return, so a later revise run can resume it.
+    const sessionId = agent.sessionId;
     const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
-    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true };
-    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error };
+    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true, sessionId };
+    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error, sessionId };
     console.log(`  ↳ opened PR ${fin.url}`);
-    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error };
+    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId };
+  } finally {
+    await removeWorktree(repo, wt.path);
+  }
+}
+
+// Revise pass: the task was sent back from Review with a correction. Re-open its
+// EXISTING PR branch in a worktree at the SAME path (so `--resume` recalls the
+// original session), let the agent apply the correction (and resolve any conflict
+// from merging the latest base), then commit + push to update the SAME PR. Bails
+// before committing on cancel/timeout, like runWithPr.
+async function runWithRevise(route, task, { signal } = {}) {
+  const repo = resolveCwd(route, task, { base: REPO_BASE, cwdBase: process.cwd() });
+  const branch = branchName(task);
+
+  const wt = await createReviseWorktree(repo, branch, task.id);
+  if (wt.error) return { result: `Revise aborted: ${wt.error}`, error: true };
+
+  try {
+    const runTask = { ...task, prompt: revisePrompt(task, { mergeConflict: wt.mergeConflict }) };
+    // Resume the original implementer session when we have its id; otherwise a
+    // fresh agent works from the checked-out branch + the correction note.
+    const gateRoute = resumeRoute(route, task.sessionId);
+    const agent = await runCommand(gateRoute, runTask, wt.path, { signal });
+    if (agent.canceled || signal?.aborted) return { result: agent.result, error: false, canceled: true };
+    if (agent.timedOut) return { result: agent.result, error: true, timedOut: true };
+
+    let note = "";
+    if (shouldReview(route, task, REVIEW_FORCED)) {
+      const r = await reviewLoop({
+        route,
+        task,
+        wtPath: wt.path,
+        runCommand,
+        signal,
+        log: (m) => console.log(`  ↳ ${m}`),
+      });
+      if (r.summary) note = `\n\n${r.summary}`;
+    }
+    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true };
+
+    // Resume keeps the same id; a fresh fallback yields a new one — persist whichever
+    // so the next revise resumes the latest session.
+    const sessionId = agent.sessionId || task.sessionId;
+    const fin = await finishRevise(wt.path, {
+      branch,
+      title: task.title,
+      note: task.reviseNote,
+      mergeConflict: wt.mergeConflict,
+    });
+    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ Revise step failed: ${fin.error}`, error: true, sessionId };
+    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(revise made no changes — PR unchanged)`, error: agent.error, sessionId };
+    console.log(`  ↳ updated PR ${fin.url}`);
+    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId };
   } finally {
     await removeWorktree(repo, wt.path);
   }
@@ -231,8 +301,15 @@ async function processTask(task) {
   // Code routes (pr:true) that target a repo get the dispatcher-driven PR flow:
   // the agent only edits, then we branch/commit/push/PR before Review.
   const opensPr = route ? shouldOpenPr(route, task) : false;
-  const runTask = opensPr ? { ...task, prompt: implementPrompt(task.prompt) } : task;
-  const prNote = opensPr ? ` (→ PR in ${repoFromTags(task.tags)})` : "";
+  // A revise task (sent back from Review) re-opens its existing PR branch and
+  // resumes the original session instead of implementing from scratch.
+  const revise = opensPr && isRevise(task);
+  const runTask = opensPr && !revise ? { ...task, prompt: implementPrompt(task.prompt) } : task;
+  const prNote = revise
+    ? ` (↻ revise PR in ${repoFromTags(task.tags)})`
+    : opensPr
+      ? ` (→ PR in ${repoFromTags(task.tags)})`
+      : "";
   console.log(`▶ claimed "${task.title}" → ${label}${prNote}`);
   await notify(`🟢 Picked up "${task.title}"\n→ dispatched to ${label}${prNote}`);
 
@@ -244,6 +321,8 @@ async function processTask(task) {
       outcome = { result: dryRunPreview(route, runTask, opensPr), error: false };
     } else if (!route) {
       outcome = { result: `No runner configured for agent "${task.agent}".`, error: true };
+    } else if (revise) {
+      outcome = await runWithRevise(route, task, { signal: ac.signal });
     } else if (opensPr) {
       outcome = await runWithPr(route, runTask, task, { signal: ac.signal });
     } else {
@@ -280,7 +359,7 @@ async function processTask(task) {
   // Review (the merge-watcher advances merged PRs to Done).
   const prUrl = extractPrUrl(outcome.result);
   const status = resultStatus({ execute: EXECUTE, error: outcome.error, prOpened: Boolean(prUrl) });
-  await reportResult(task.id, { result: outcome.result, error: outcome.error, status });
+  await reportResult(task.id, { result: outcome.result, error: outcome.error, status, sessionId: outcome.sessionId });
 
   const head = outcome.error ? `❌ Failed "${task.title}"` : `✅ Done "${task.title}" by ${label}`;
   // Surface the PR link as its own line (Telegram auto-links it) so it's always

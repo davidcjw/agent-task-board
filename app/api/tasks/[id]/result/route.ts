@@ -23,7 +23,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const result = typeof body.result === "string" ? body.result : "";
   const error = body.error === true;
   const toStatus = coerceStatus(body.status) ?? "review";
-  const task = await store.result(id, result, { toStatus, error });
+  const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+  const task = await store.result(id, result, { toStatus, error, sessionId });
   if (!task) return NextResponse.json({ error: "Task not found" }, { status: 404 });
   return NextResponse.json({ task });
 }

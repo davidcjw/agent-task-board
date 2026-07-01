@@ -25,7 +25,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { addTask, cancelTask, getBoard } from "./lib/api.mjs";
+import { addTask, cancelTask, getBoard, patchTask } from "./lib/api.mjs";
 import {
   cancelKeyboard,
   cancelPickerText,
@@ -33,6 +33,13 @@ import {
   parseCancelCallback,
 } from "./lib/cancel.mjs";
 import { parseMessage } from "./lib/message.mjs";
+import {
+  matchReviseTask,
+  parseReviseCommand,
+  reviseCandidates,
+  reviseListText,
+  revisePatch,
+} from "./lib/revise.mjs";
 import { clearPending, readPending } from "./lib/pending.mjs";
 import { listRepos } from "./lib/repos.mjs";
 import { matchRepoSlug, repoCommandName, repoFromTags } from "./lib/routes.mjs";
@@ -134,6 +141,9 @@ const HELP =
   "Stop work in flight:\n" +
   "• /cancel  → cancel the running task (or pick one if several)\n" +
   "• /cancel <id>  → cancel by id · /cancel all  → cancel everything\n\n" +
+  "Send a Review PR back to fix (failing CI / merge conflict):\n" +
+  "• /revise  → list cards you can send back\n" +
+  "• /revise <id> <correction>  → resume the agent & update the same PR\n\n" +
   "Hunt for improvements now:\n" +
   "• /scout  → scan ~/code and propose the top idea (/scout full for a full sweep)\n\n" +
   "/id — show this chat id (set as TELEGRAM_CHAT_ID for notifications)";
@@ -142,6 +152,54 @@ const HELP =
 async function runningTasks() {
   const board = await getBoard();
   return (board.columns?.running || []).map((id) => board.tasks[id]).filter(Boolean);
+}
+
+// The board's Review-lane tasks (the revise candidates are the PR-carrying ones).
+async function reviewTasks() {
+  const board = await getBoard();
+  return (board.columns?.review || []).map((id) => board.tasks[id]).filter(Boolean);
+}
+
+// /revise dispatch: bare → list revise-capable cards; `<id-prefix> <correction>`
+// → send that Review card back to Queued so the dispatcher resumes its session and
+// updates the SAME PR. The note is required (that's the whole point of a revise).
+async function handleRevise(chatId, arg) {
+  let review;
+  try {
+    review = await reviewTasks();
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ Couldn't reach the board: ${e.message}`);
+    return;
+  }
+  const { idPrefix, note } = parseReviseCommand(arg);
+  if (!idPrefix) {
+    await sendMessage(chatId, reviseListText(review));
+    return;
+  }
+  const { match, candidates } = matchReviseTask(reviseCandidates(review), idPrefix);
+  if (!match) {
+    await sendMessage(
+      chatId,
+      candidates.length > 1
+        ? `🤔 "${idPrefix}" matches ${candidates.length} Review cards — use more of the id.`
+        : `❓ No Review card with an open PR starts with "${idPrefix}".\n\n${reviseListText(review)}`,
+    );
+    return;
+  }
+  if (!note) {
+    await sendMessage(chatId, `✍️ Add a correction: /revise ${match.id.slice(0, 8)} <what to fix>`);
+    return;
+  }
+  try {
+    await patchTask(match.id, revisePatch(match, note));
+    await sendMessage(
+      chatId,
+      `↩️ Sent "${match.title}" back to Queued — it'll resume its session and update the PR.`,
+    );
+    console.log(`revise "${match.title}" (${match.id})`);
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ Couldn't send it back: ${e.message}`);
+  }
 }
 
 // Fire a cancel request for one task and confirm. The dispatcher does the actual
@@ -283,6 +341,13 @@ async function handle(message) {
   // /cancel <id-prefix> targets one; /cancel all stops every running task.
   if (text === "/cancel" || text.startsWith("/cancel ")) {
     await handleCancel(chatId, text.slice(7).trim());
+    return;
+  }
+
+  // /revise — send a Review card back for another pass (resumes + updates its PR).
+  // Bare lists what's revise-able; `/revise <id-prefix> <correction>` sends one back.
+  if (text === "/revise" || text.startsWith("/revise ")) {
+    await handleRevise(chatId, text.slice(7).trim());
     return;
   }
 
@@ -447,6 +512,7 @@ async function syncCommands() {
   const reserved = [
     { command: "use", description: "Set / show the active repo (/use <repo>, /use off)" },
     { command: "cancel", description: "Cancel a running task (/cancel, /cancel <id>, /cancel all)" },
+    { command: "revise", description: "Send a Review PR back to fix (/revise <id> <correction>)" },
     { command: "scout", description: "Scan ~/code for improvements now (/scout, /scout full)" },
     { command: "id", description: "Show this chat id" },
     { command: "help", description: "How to use this bot" },

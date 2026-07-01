@@ -36,6 +36,7 @@ export function coerceTaskPatch(body: Record<string, unknown>): TaskPatch {
   if ("agent" in body) patch.agent = asString(body.agent);
   if ("tags" in body) patch.tags = coerceTags(body.tags);
   if ("notes" in body) patch.notes = asString(body.notes);
+  if ("reviseNote" in body) patch.reviseNote = asString(body.reviseNote);
   if ("archived" in body) patch.archived = Boolean(body.archived);
   const status = coerceStatus(body.status);
   if (status) patch.status = status;

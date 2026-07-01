@@ -3,7 +3,8 @@
 //
 // For each task in Review whose result contains a GitHub PR URL, it asks `gh`
 // for that PR's state: merged → move the task to Done; closed without merging
-// (you rejected it) → delete the card. Both ping Telegram.
+// (you rejected it) → delete the card. Either way it also prunes the now-stale
+// `atb/<id>` head branch. Both outcomes ping Telegram.
 // It only calls `gh` when a Review task actually carries a PR URL, so it stays
 // quiet (no auth prompts, no API calls) until there's something to watch.
 //
@@ -15,7 +16,7 @@
 //   node agent/merge-watcher.mjs --interval 60000
 
 import { deleteTask, getBoard, moveTask } from "./lib/api.mjs";
-import { extractPrUrl, isClosed, isMerged, prState } from "./lib/prs.mjs";
+import { deleteRemoteBranch, extractPrUrl, isClosed, isMerged, prState, repoFromPrUrl } from "./lib/prs.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
@@ -46,15 +47,28 @@ async function sweep() {
       console.error(`gh check failed for ${url}: ${info.error}`);
       continue;
     }
-    if (isMerged(info)) {
+    const terminal = isMerged(info) ? "merged" : isClosed(info) ? "closed" : null;
+    if (!terminal) continue; // still open → keep watching
+
+    if (terminal === "merged") {
       await moveTask(id, "done");
       console.log(`✓ merged → Done: "${task.title}" (${url})`);
       await notify(`🎉 Merged → Done "${task.title}"\n${url}`);
-    } else if (isClosed(info)) {
+    } else {
       // PR closed without merging → you rejected the work; drop the dead card.
       await deleteTask(id);
       console.log(`🗑 closed (not merged) → deleted card: "${task.title}" (${url})`);
       await notify(`🗑 Closed PR → removed card "${task.title}"\n${url}`);
+    }
+
+    // Prune the now-stale branch — both outcomes leave the `atb/<id>` head behind.
+    // Guarded to our own branches so we never touch a hand-made PR's head.
+    const loc = repoFromPrUrl(url);
+    const branch = info.headBranch;
+    if (loc && branch && branch.startsWith("atb/")) {
+      const res = await deleteRemoteBranch(loc.owner, loc.repo, branch);
+      if (res.error) console.error(`  ↳ branch prune failed for ${branch}: ${res.error}`);
+      else if (!res.missing) console.log(`  ↳ pruned branch ${branch}`);
     }
   }
 }

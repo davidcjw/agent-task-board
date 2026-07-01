@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractPrUrl, isClosed, isMerged } from "./prs.mjs";
+import { extractPrUrl, isClosed, isMerged, repoFromPrUrl } from "./prs.mjs";
 
 describe("extractPrUrl", () => {
   it("pulls a PR url out of a blob of agent output", () => {
@@ -44,6 +44,19 @@ describe("isMerged", () => {
     expect(isMerged({ state: "CLOSED", mergedAt: null })).toBe(false);
     expect(isMerged({ error: "gh not found" })).toBe(false);
     expect(isMerged(null)).toBe(false);
+  });
+});
+
+describe("repoFromPrUrl", () => {
+  it("parses owner/repo from a PR url", () => {
+    expect(repoFromPrUrl("https://github.com/davidcjw/miles-wallet/pull/3")).toEqual({
+      owner: "davidcjw",
+      repo: "miles-wallet",
+    });
+  });
+  it("returns null for a non-PR / empty string", () => {
+    expect(repoFromPrUrl("https://github.com/davidcjw/miles-wallet")).toBe(null);
+    expect(repoFromPrUrl("")).toBe(null);
   });
 });
 

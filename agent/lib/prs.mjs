@@ -18,6 +18,12 @@ export function isMerged(info) {
   return Boolean(info && (info.state === "MERGED" || info.mergedAt));
 }
 
+/** A PR counts as closed-without-merge when gh reports state CLOSED and it was
+ *  never merged (no mergedAt) — i.e. you rejected it. */
+export function isClosed(info) {
+  return Boolean(info && info.state === "CLOSED" && !info.mergedAt);
+}
+
 /**
  * Ask `gh` for a PR's merge state.
  * Resolves `{ state, mergedAt }` on success, or `{ error }` (gh missing, not

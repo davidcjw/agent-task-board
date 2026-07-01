@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// merge-watcher — moves Review tasks to Done once their PR is merged.
+// merge-watcher — advances Review tasks by their PR's fate.
 //
 // For each task in Review whose result contains a GitHub PR URL, it asks `gh`
-// whether that PR is merged; if so it moves the task to Done and pings Telegram.
+// for that PR's state: merged → move the task to Done; closed without merging
+// (you rejected it) → delete the card. Both ping Telegram.
 // It only calls `gh` when a Review task actually carries a PR URL, so it stays
 // quiet (no auth prompts, no API calls) until there's something to watch.
 //
@@ -13,8 +14,8 @@
 //   node agent/merge-watcher.mjs --once        # one sweep and exit
 //   node agent/merge-watcher.mjs --interval 60000
 
-import { getBoard, moveTask } from "./lib/api.mjs";
-import { extractPrUrl, isMerged, prState } from "./lib/prs.mjs";
+import { deleteTask, getBoard, moveTask } from "./lib/api.mjs";
+import { extractPrUrl, isClosed, isMerged, prState } from "./lib/prs.mjs";
 import { sendMessage, telegramEnabled } from "./lib/telegram.mjs";
 
 const args = process.argv.slice(2);
@@ -49,6 +50,11 @@ async function sweep() {
       await moveTask(id, "done");
       console.log(`✓ merged → Done: "${task.title}" (${url})`);
       await notify(`🎉 Merged → Done "${task.title}"\n${url}`);
+    } else if (isClosed(info)) {
+      // PR closed without merging → you rejected the work; drop the dead card.
+      await deleteTask(id);
+      console.log(`🗑 closed (not merged) → deleted card: "${task.title}" (${url})`);
+      await notify(`🗑 Closed PR → removed card "${task.title}"\n${url}`);
     }
   }
 }

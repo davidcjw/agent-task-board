@@ -169,8 +169,16 @@ describe("branchName", () => {
 describe("implementPrompt", () => {
   it("tells the agent to edit only and leave git to the dispatcher", () => {
     const out = implementPrompt("add a favicon");
-    expect(out).toMatch(/do NOT commit, push, or open a pull request/i);
+    expect(out).toMatch(/do NOT run git/i);
+    expect(out).toMatch(/do NOT open a/i);
     expect(out.endsWith("Task: add a favicon")).toBe(true);
+  });
+
+  it("confines the agent to the worktree and defuses absolute paths", () => {
+    const out = implementPrompt("in /Users/foo/code/bar, add CI");
+    expect(out).toMatch(/current working directory/i);
+    expect(out).toMatch(/absolute/i);
+    expect(out).toMatch(/never `cd`/i);
   });
 });
 

@@ -137,9 +137,16 @@ export function repoCommandName(name) {
  *  commit/push/PR afterward, so the agent must not touch git itself. */
 export function implementPrompt(prompt) {
   return (
-    "Implement the task below by editing files in this repository. Make the code " +
-    "changes only — do NOT commit, push, or open a pull request; that is handled " +
-    "automatically after you finish. Task: " +
+    "Implement the task below by editing files in the CURRENT working directory. " +
+    "It is an isolated git worktree — treat it as the repo root. Follow these rules strictly:\n" +
+    "- Work ONLY inside the current working directory. Never `cd` elsewhere.\n" +
+    "- Treat every path as relative to here. If the task names an ABSOLUTE path " +
+    "(e.g. /Users/<name>/code/<repo>/…), ignore the absolute prefix and act on the " +
+    "matching path inside the current working directory — never touch the original checkout.\n" +
+    "- Make code changes ONLY. Do NOT run git (no add/commit/branch/push) and do NOT open a " +
+    "pull request; committing, pushing, and the PR are handled automatically after you finish. " +
+    "Leave your changes uncommitted in the working tree.\n\n" +
+    "Task: " +
     (prompt || "")
   );
 }

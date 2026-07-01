@@ -12,6 +12,8 @@ import {
   normalizeTags,
   parseTags,
   reconcile,
+  REVISE_TAG,
+  revisePatch,
   setResult,
   tasksForColumn,
   taskCount,
@@ -284,6 +286,59 @@ describe("setResult", () => {
     state = setResult(state, "t1", "boom", { error: true, toStatus: "done" }, 5000);
     expect(state.tasks.t1.error).toBe(true);
     expect(state.tasks.t1.status).toBe("done");
+  });
+
+  it("persists a runner session id when one is reported", () => {
+    let state = emptyState();
+    state = addTask(state, createTask({ ...baseInput, status: "running" }, 1, "t1"));
+    state = setResult(state, "t1", "done", { sessionId: "sess-abc" }, 5000);
+    expect(state.tasks.t1.sessionId).toBe("sess-abc");
+  });
+
+  it("keeps a previously-captured session id when a later run reports none", () => {
+    let state = emptyState();
+    state = addTask(state, createTask({ ...baseInput, status: "running" }, 1, "t1"));
+    state = setResult(state, "t1", "first", { sessionId: "sess-abc" }, 5000);
+    state = setResult(state, "t1", "second", {}, 6000);
+    expect(state.tasks.t1.sessionId).toBe("sess-abc");
+  });
+});
+
+describe("revise (send back)", () => {
+  it("revisePatch returns a queued patch with the revise tag and a trimmed note", () => {
+    const task = createTask({ ...baseInput, tags: ["backend"] }, 1, "t1");
+    const patch = revisePatch(task, "  fix the lint error  ");
+    expect(patch.status).toBe("queued");
+    expect(patch.tags).toEqual(["backend", REVISE_TAG]);
+    expect(patch.reviseNote).toBe("fix the lint error");
+  });
+
+  it("sends a Review task back to Queued, keeping session id, result and createdAt", () => {
+    let state = emptyState();
+    state = addTask(state, createTask({ ...baseInput, status: "running" }, 1000, "t1"));
+    state = setResult(state, "t1", "opened a PR", { sessionId: "sess-1" }, 2000);
+    expect(state.tasks.t1.status).toBe("review");
+
+    state = updateTask(state, "t1", revisePatch(state.tasks.t1, "rebase onto main"), 3000);
+    const t = state.tasks.t1;
+    expect(t.status).toBe("queued");
+    expect(state.columns.queued).toContain("t1");
+    expect(t.tags).toContain(REVISE_TAG);
+    expect(t.reviseNote).toBe("rebase onto main");
+    expect(t.sessionId).toBe("sess-1"); // preserved so the dispatcher can resume
+    expect(t.result).toBe("opened a PR"); // previous output kept for context
+    expect(t.createdAt).toBe(1000); // FIFO slot preserved — re-picked next
+  });
+
+  it("does not duplicate the revise tag across successive passes", () => {
+    let state = emptyState();
+    state = addTask(
+      state,
+      createTask({ ...baseInput, tags: ["backend", REVISE_TAG], status: "running" }, 1000, "t1"),
+    );
+    state = setResult(state, "t1", "x", {}, 2000);
+    state = updateTask(state, "t1", revisePatch(state.tasks.t1, "again"), 3000);
+    expect(state.tasks.t1.tags.filter((x) => x === REVISE_TAG)).toHaveLength(1);
   });
 });
 

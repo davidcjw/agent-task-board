@@ -133,6 +133,58 @@ export function repoCommandName(name) {
     .slice(0, 32);
 }
 
+/**
+ * Parse `git diff --numstat` output into `{ path, added, removed }[]`. Each line
+ * is `added\tremoved\tpath`; binary files report `-` for both counts (kept as
+ * null). Rename lines (`old => new`, or `dir/{old => new}/file`) are collapsed to
+ * the new path so the summary reads naturally. Pure + unit-tested.
+ */
+export function parseNumstat(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      if (parts.length < 3) return null;
+      const [a, r] = parts;
+      let file = parts.slice(2).join("\t");
+      // Collapse a rename to just the destination path.
+      file = file.replace(/\{[^}]*=>\s*([^}]*)\}/, "$1").replace(/^.*\s=>\s+/, "");
+      file = file.replace(/\/{2,}/g, "/").trim();
+      return { path: file, added: a === "-" ? null : Number(a), removed: r === "-" ? null : Number(r) };
+    })
+    .filter((f) => f && f.path);
+}
+
+/**
+ * Build the PR body: a short summary line plus a per-file changed list with
+ * +added/-removed counts, so a reviewer sees at a glance what the task touched.
+ * `files` is the output of `parseNumstat`. Pure + unit-tested.
+ */
+export function prBody({ title, files }) {
+  const list = files || [];
+  const lines = [];
+  lines.push("## Summary");
+  lines.push("");
+  lines.push(title ? String(title).trim() : "Automated change by the agent task board.");
+  lines.push("");
+  lines.push(`## Files changed (${list.length})`);
+  lines.push("");
+  if (list.length === 0) {
+    lines.push("_No file changes detected._");
+  } else {
+    for (const f of list) {
+      const stat = f.added == null || f.removed == null ? "binary" : `+${f.added}/-${f.removed}`;
+      lines.push(`- \`${f.path}\` (${stat})`);
+    }
+  }
+  lines.push("");
+  lines.push("---");
+  lines.push("_PR opened automatically by the agent task board dispatcher._");
+  return lines.join("\n");
+}
+
 /** Wrap a task prompt so the agent ONLY edits files — the dispatcher does the
  *  commit/push/PR afterward, so the agent must not touch git itself. */
 export function implementPrompt(prompt) {

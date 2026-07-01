@@ -6,6 +6,8 @@ import {
   matchRepoSlug,
   missingRepoTag,
   normalizeRepoKey,
+  parseNumstat,
+  prBody,
   repoCommandName,
   repoFromTags,
   resolveCwd,
@@ -249,5 +251,68 @@ describe("worktreePath", () => {
 
   it("falls back to 'repo' when the repo path is empty", () => {
     expect(worktreePath("/tmp/wt", "", "x")).toBe("/tmp/wt/repo-x");
+  });
+});
+
+describe("parseNumstat", () => {
+  it("parses added/removed/path lines", () => {
+    expect(parseNumstat("3\t1\tlib/a.mjs\n10\t0\tlib/b.mjs")).toEqual([
+      { path: "lib/a.mjs", added: 3, removed: 1 },
+      { path: "lib/b.mjs", added: 10, removed: 0 },
+    ]);
+  });
+
+  it("marks binary files (— counts) as null", () => {
+    expect(parseNumstat("-\t-\tassets/logo.png")).toEqual([
+      { path: "assets/logo.png", added: null, removed: null },
+    ]);
+  });
+
+  it("collapses renames to the destination path", () => {
+    expect(parseNumstat("1\t1\tsrc/{old => new}/file.ts")).toEqual([
+      { path: "src/new/file.ts", added: 1, removed: 1 },
+    ]);
+    expect(parseNumstat("0\t0\told.ts => new.ts")).toEqual([
+      { path: "new.ts", added: 0, removed: 0 },
+    ]);
+  });
+
+  it("ignores blank and malformed lines", () => {
+    expect(parseNumstat("\n5\tfoo\n2\t2\tok.ts\n")).toEqual([
+      { path: "ok.ts", added: 2, removed: 2 },
+    ]);
+  });
+
+  it("handles empty input", () => {
+    expect(parseNumstat("")).toEqual([]);
+    expect(parseNumstat(null)).toEqual([]);
+  });
+});
+
+describe("prBody", () => {
+  it("includes the title as the summary and a per-file changed list", () => {
+    const body = prBody({
+      title: "Add feature X",
+      files: [
+        { path: "lib/a.mjs", added: 3, removed: 1 },
+        { path: "assets/logo.png", added: null, removed: null },
+      ],
+    });
+    expect(body).toContain("## Summary");
+    expect(body).toContain("Add feature X");
+    expect(body).toContain("## Files changed (2)");
+    expect(body).toContain("- `lib/a.mjs` (+3/-1)");
+    expect(body).toContain("- `assets/logo.png` (binary)");
+  });
+
+  it("handles no files", () => {
+    const body = prBody({ title: "Docs tweak", files: [] });
+    expect(body).toContain("## Files changed (0)");
+    expect(body).toContain("_No file changes detected._");
+  });
+
+  it("falls back to a default summary line without a title", () => {
+    const body = prBody({ files: [{ path: "a.ts", added: 1, removed: 0 }] });
+    expect(body).toContain("Automated change by the agent task board.");
   });
 });

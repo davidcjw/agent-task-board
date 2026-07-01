@@ -56,6 +56,7 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
 - **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
 - **Agent orchestration (opt-in)** — switch to a server-backed live board and let real agents work the queue: an **MCP server** to enqueue by talking to an agent, a **dispatcher** that claims tasks (with optional **concurrency**), routes each by `agent` label and a `/repo` slash command (or `repo:` tag) to the right repo, and — for code tasks — opens a **pull request automatically** in an isolated `git worktree` before the card lands in Review. A **Telegram bot** is your control surface. See [Agent orchestration](#agent-orchestration).
+- **Automated dependency updates** — [Dependabot](.github/dependabot.yml) opens weekly grouped PRs for npm and GitHub Actions bumps (majors stay ungrouped for individual review).
 - **Export / Import** — back up or move your board as a JSON file.
 - **Undo** — deletes and board-clears are undoable from a toast.
 - **Keyboard shortcuts** — `n` to add a task, `/` to focus search, `⌘↵` to save, `Esc` to close.

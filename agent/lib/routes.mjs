@@ -162,7 +162,7 @@ export function parseNumstat(text) {
  * +added/-removed counts, so a reviewer sees at a glance what the task touched.
  * `files` is the output of `parseNumstat`. Pure + unit-tested.
  */
-export function prBody({ title, files }) {
+export function prBody({ title, files, id }) {
   const list = files || [];
   const lines = [];
   lines.push("## Summary");
@@ -182,6 +182,9 @@ export function prBody({ title, files }) {
   lines.push("");
   lines.push("---");
   lines.push("_PR opened automatically by the agent task board dispatcher._");
+  // Board task id footer: lets you map a GitHub PR back to its board card (and is
+  // the id you pass to `/revise <id> <fix>` to send this PR back for another pass).
+  if (id) lines.push(`_Board task: \`${id}\`_`);
   return lines.join("\n");
 }
 

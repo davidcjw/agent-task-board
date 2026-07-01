@@ -197,7 +197,7 @@ export async function createReviseWorktree(repo, branch, id) {
  * Commit whatever the agent changed, push the branch, and open (or find) the PR.
  * Runs inside the worktree. Returns { url } | { noChanges: true } | { error }.
  */
-export async function finishPr(wt, { branch, base, title }) {
+export async function finishPr(wt, { branch, base, title, id }) {
   const add = await run("git", ["add", "-A"], wt);
   if (add.code !== 0) return { error: `git add failed: ${add.err || add.out}` };
   // Unstage the worktree-hydration artifacts so they never land in the PR: the
@@ -220,7 +220,7 @@ export async function finishPr(wt, { branch, base, title }) {
   // Build the PR description from the branch's diffstat so reviewers get a summary
   // of what changed (falls back to a bare body if the numstat read fails).
   const numstat = await run("git", ["diff", "--numstat", `${base}..${branch}`], wt);
-  const body = prBody({ title, files: numstat.code === 0 ? parseNumstat(numstat.out) : [] });
+  const body = prBody({ title, files: numstat.code === 0 ? parseNumstat(numstat.out) : [], id });
   const create = await run(
     "gh",
     ["pr", "create", "--title", title || "agent task", "--body", body, "--head", branch, "--base", base],

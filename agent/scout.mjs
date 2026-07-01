@@ -15,6 +15,8 @@
 //
 // Usage:
 //   node agent/scout.mjs                # scan → rank → propose the top idea
+//   node agent/scout.mjs --incremental  # as above but never auto-promote to a full sweep
+//   node agent/scout.mjs --full         # force a full sweep (scan every repo, rebuild backlog)
 //   node agent/scout.mjs --dry-run      # scan → rank → print, but propose nothing
 //   node agent/scout.mjs --print-prompt # print the scan prompt and exit
 //
@@ -58,6 +60,7 @@ const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const DRY_RUN = has("--dry-run");
 const FULL = has("--full"); // ignore the memory ledger and scan every repo
+const INCREMENTAL = has("--incremental"); // never auto-promote to a full sweep (dueForFullScan) — leave that to the scheduler / --full
 const MODEL = process.env.SCOUT_MODEL || "";
 const TIMEOUT = Number(process.env.SCOUT_TIMEOUT || "1800000"); // 30 min — scanning many repos is slow
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
@@ -183,7 +186,10 @@ async function main() {
   const now = Date.now();
   let memory = readMemory();
   const fingerprints = await repoFingerprints(repos);
-  const full = FULL || dueForFullScan(memory, now);
+  // A full sweep is forced by --full or the 24h auto-timer — but --incremental
+  // suppresses the timer so an on-demand run stays cheap (the scheduler still
+  // owns the periodic full sweep; the "due" flag just waits for its next run).
+  const full = FULL || (!INCREMENTAL && dueForFullScan(memory, now));
   const { scan, skipped } = full ? { scan: repos, skipped: [] } : reposToScan(repos, fingerprints, memory);
   console.log(
     `📒 memory · ${scan.length} to scan, ${skipped.length} unchanged${full ? " · full sweep" : ""} · backlog ${memory.ideas.length}`,

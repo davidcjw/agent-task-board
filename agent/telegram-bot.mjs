@@ -21,8 +21,10 @@
 // Auth: only chats in ALLOWED_CHAT_IDS (comma-separated) — or TELEGRAM_CHAT_ID
 // if that's unset — may queue tasks. Set neither only on a trusted network.
 
+import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { addTask, cancelTask, getBoard } from "./lib/api.mjs";
 import {
   cancelKeyboard,
@@ -35,7 +37,7 @@ import { clearPending, readPending } from "./lib/pending.mjs";
 import { listRepos } from "./lib/repos.mjs";
 import { matchRepoSlug, repoCommandName, repoFromTags } from "./lib/routes.mjs";
 import { readMemory, recordAccepted, writeMemory } from "./lib/scout-memory.mjs";
-import { parseCallback } from "./lib/scout.mjs";
+import { parseCallback, proposalActive } from "./lib/scout.mjs";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -52,6 +54,7 @@ if (!telegramEnabled()) {
 
 const OFFSET_FILE = path.join(process.cwd(), ".data", "tg-offset");
 const REPOS_FILE = path.join(process.cwd(), ".data", "tg-repos.json");
+const SCOUT_SCRIPT = fileURLToPath(new URL("./scout.mjs", import.meta.url));
 
 // Sender allowlist. Anyone can find a bot by its username, so the inbound side
 // only queues tasks from chats we trust: ALLOWED_CHAT_IDS (comma-separated)
@@ -131,6 +134,8 @@ const HELP =
   "Stop work in flight:\n" +
   "• /cancel  → cancel the running task (or pick one if several)\n" +
   "• /cancel <id>  → cancel by id · /cancel all  → cancel everything\n\n" +
+  "Hunt for improvements now:\n" +
+  "• /scout  → scan ~/code and propose the top idea (/scout full for a full sweep)\n\n" +
   "/id — show this chat id (set as TELEGRAM_CHAT_ID for notifications)";
 
 // The board's currently-running tasks (the cancel candidates).
@@ -197,6 +202,62 @@ async function handleCancel(chatId, arg) {
   await sendMessage(chatId, cancelPickerText(running), { replyMarkup: cancelKeyboard(running) });
 }
 
+// One in-flight on-demand scout at a time (the scheduled launchd run is separate;
+// the pending-proposal file keeps the two from stepping on each other).
+let scoutChild = null;
+
+// /scout — run the Improvement Scout on demand. It scans ~/code, ranks ideas, and
+// (if it finds one) sends its OWN Yes/No proposal — handleCallback fields the tap,
+// exactly like the scheduled launchd run. We only launch it and report what came
+// of it: either a proposal message lands, or it comes back empty.
+async function handleScout(chatId, arg) {
+  if (scoutChild) {
+    await sendMessage(chatId, "🔭 Scout is already running — hang tight.");
+    return;
+  }
+  const before = readPending();
+  if (proposalActive(before, Date.now())) {
+    await sendMessage(chatId, "🔭 A scout idea is already waiting for your Yes/No — answer that one first.");
+    return;
+  }
+  const full = arg.trim().toLowerCase() === "full";
+  await sendMessage(
+    chatId,
+    `🔭 Scanning ~/code for improvements${full ? " (full sweep)" : ""}… I'll send the top idea when it's ready.`,
+  );
+  // Plain /scout stays cheap: --incremental suppresses the 24h auto-full-sweep so
+  // an on-demand tap never blows up into a ~30-min all-repo scan (the scheduler and
+  // /scout full own full sweeps). /scout full opts into one explicitly.
+  const scriptArgs = [SCOUT_SCRIPT, full ? "--full" : "--incremental"];
+  let child;
+  try {
+    child = spawn(process.execPath, scriptArgs, { cwd: process.cwd(), env: process.env });
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ Couldn't start the scout: ${e.message}`);
+    return;
+  }
+  scoutChild = child;
+  child.stdout.on("data", (d) => process.stdout.write(`[scout] ${d}`));
+  child.stderr.on("data", (d) => process.stderr.write(`[scout] ${d}`));
+  child.on("error", async (e) => {
+    scoutChild = null;
+    await sendMessage(chatId, `⚠️ Scout failed to start: ${e.message}`);
+  });
+  child.on("close", async (code) => {
+    scoutChild = null;
+    // If the scout parked a fresh proposal, its own message already reached you —
+    // stay quiet. Otherwise it either found nothing or errored.
+    const after = readPending();
+    if (proposalActive(after, Date.now()) && (!before || after.id !== before.id)) return;
+    await sendMessage(
+      chatId,
+      code === 0
+        ? "🔭 Scout finished — nothing new worth proposing right now."
+        : `⚠️ Scout exited with an error (code ${code}). Check the logs.`,
+    );
+  });
+}
+
 async function handle(message) {
   const chatId = message.chat?.id;
   const text = (message.text || "").trim();
@@ -222,6 +283,12 @@ async function handle(message) {
   // /cancel <id-prefix> targets one; /cancel all stops every running task.
   if (text === "/cancel" || text.startsWith("/cancel ")) {
     await handleCancel(chatId, text.slice(7).trim());
+    return;
+  }
+
+  // /scout — kick off the Improvement Scout now (/scout full for a full sweep).
+  if (text === "/scout" || text.startsWith("/scout ")) {
+    await handleScout(chatId, text.slice(6).trim());
     return;
   }
 
@@ -380,6 +447,7 @@ async function syncCommands() {
   const reserved = [
     { command: "use", description: "Set / show the active repo (/use <repo>, /use off)" },
     { command: "cancel", description: "Cancel a running task (/cancel, /cancel <id>, /cancel all)" },
+    { command: "scout", description: "Scan ~/code for improvements now (/scout, /scout full)" },
     { command: "id", description: "Show this chat id" },
     { command: "help", description: "How to use this bot" },
   ];

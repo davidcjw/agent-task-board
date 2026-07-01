@@ -91,6 +91,7 @@ The board seeds itself with a sample set of tasks on first visit. Clear it (tras
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run test` | Run the Vitest suite |
+| `npm run test:coverage` | Run the Vitest suite with a coverage summary (v8) |
 | `npm run test:watch` | Vitest in watch mode |
 | `npm run agents` | Bring up the whole control plane: board + dispatcher + Telegram bot ([details](#agent-orchestration)) |
 

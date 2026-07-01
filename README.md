@@ -1,5 +1,6 @@
 # Agent Task Board
 
+[![CI](https://github.com/davidcjw/agent-task-board/actions/workflows/ci.yml/badge.svg)](https://github.com/davidcjw/agent-task-board/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)

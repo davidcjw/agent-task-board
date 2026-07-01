@@ -12,5 +12,11 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./test/setup.ts"],
     include: ["lib/**/*.test.ts", "lib/**/*.test.tsx", "components/**/*.test.tsx", "agent/**/*.test.mjs"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "text-summary", "json-summary"],
+      include: ["lib/**", "agent/**"],
+      exclude: ["**/*.test.*", "**/*.config.*"],
+    },
   },
 });

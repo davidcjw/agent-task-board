@@ -10,7 +10,7 @@ import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractPrUrl } from "./prs.mjs";
-import { worktreePath } from "./routes.mjs";
+import { parseNumstat, prBody, worktreePath } from "./routes.mjs";
 
 const WORKTREE_BASE = process.env.AGENT_WORKTREE_DIR || path.join(os.tmpdir(), "atb-worktrees");
 
@@ -159,7 +159,15 @@ export async function finishPr(wt, { branch, base, title }) {
   const push = await run("git", ["push", "-u", "origin", branch], wt);
   if (push.code !== 0) return { error: `git push failed: ${push.err || push.out}` };
 
-  const create = await run("gh", ["pr", "create", "--fill", "--head", branch, "--base", base], wt);
+  // Build the PR description from the branch's diffstat so reviewers get a summary
+  // of what changed (falls back to a bare body if the numstat read fails).
+  const numstat = await run("git", ["diff", "--numstat", `${base}..${branch}`], wt);
+  const body = prBody({ title, files: numstat.code === 0 ? parseNumstat(numstat.out) : [] });
+  const create = await run(
+    "gh",
+    ["pr", "create", "--title", title || "agent task", "--body", body, "--head", branch, "--base", base],
+    wt,
+  );
   let url = create.code === 0 ? extractPrUrl(create.out) || extractPrUrl(create.err) : null;
   if (!url) {
     // A PR may already exist for this branch (e.g. a re-run) — look it up.

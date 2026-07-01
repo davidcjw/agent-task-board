@@ -53,6 +53,12 @@ export async function reportResult(id, { result, error = false, status = "review
   return data.task;
 }
 
+/** Delete a task from the board entirely. Resolves the updated board. */
+export async function deleteTask(id) {
+  const data = await request("DELETE", `/api/tasks/${id}`);
+  return data.board;
+}
+
 /** Request cancellation of a running task. Resolves the task, or throws (409) if
  *  it isn't running. The dispatcher acts on the stamped flag. */
 export async function cancelTask(id) {

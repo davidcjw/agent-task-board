@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractPrUrl, isMerged } from "./prs.mjs";
+import { extractPrUrl, isClosed, isMerged } from "./prs.mjs";
 
 describe("extractPrUrl", () => {
   it("pulls a PR url out of a blob of agent output", () => {
@@ -44,5 +44,20 @@ describe("isMerged", () => {
     expect(isMerged({ state: "CLOSED", mergedAt: null })).toBe(false);
     expect(isMerged({ error: "gh not found" })).toBe(false);
     expect(isMerged(null)).toBe(false);
+  });
+});
+
+describe("isClosed", () => {
+  it("is true only when CLOSED without a merge", () => {
+    expect(isClosed({ state: "CLOSED", mergedAt: null })).toBe(true);
+  });
+
+  it("is false for merged, open, or errored PRs", () => {
+    expect(isClosed({ state: "MERGED", mergedAt: "2026-06-26T00:00:00Z" })).toBe(false);
+    // a merged PR reports state MERGED, but guard against a CLOSED+mergedAt combo too
+    expect(isClosed({ state: "CLOSED", mergedAt: "2026-06-26T00:00:00Z" })).toBe(false);
+    expect(isClosed({ state: "OPEN", mergedAt: null })).toBe(false);
+    expect(isClosed({ error: "gh not found" })).toBe(false);
+    expect(isClosed(null)).toBe(false);
   });
 });

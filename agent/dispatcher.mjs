@@ -26,6 +26,7 @@ import {
   killGroup,
   removeWorktree,
 } from "./lib/git.mjs";
+import { appendHistory, historyRecord } from "./lib/history.mjs";
 import { notifyBody } from "./lib/message.mjs";
 import { extractPrUrl } from "./lib/prs.mjs";
 import { reviewConfig, reviewLoop, shouldReview } from "./lib/review.mjs";
@@ -201,6 +202,7 @@ async function runWithPr(route, runTask, task, { signal } = {}) {
     // (in this same worktree) until the change clears the confidence gate or the cap is hit;
     // a flagged result still opens a PR, just marked for a closer human look.
     let note = "";
+    let reviewScore;
     if (shouldReview(route, task, REVIEW_FORCED)) {
       const r = await reviewLoop({
         route,
@@ -211,17 +213,19 @@ async function runWithPr(route, runTask, task, { signal } = {}) {
         log: (m) => console.log(`  ↳ ${m}`),
       });
       if (r.summary) note = `\n\n${r.summary}`;
+      if (r.review && Number.isFinite(r.review.confidence)) reviewScore = r.review.confidence;
     }
     // A cancel during the review gate still bails before opening the PR.
-    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true };
+    // A cancel during the review gate still bails before opening the PR.
+    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true, reviewScore };
     // Carry the implementer's session id (not the reviewer/fixer's) up to the
     // board on every Review-bound return, so a later revise run can resume it.
     const sessionId = agent.sessionId;
     const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
-    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true, sessionId };
-    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error, sessionId };
+    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true, sessionId, reviewScore };
+    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error, sessionId, reviewScore };
     console.log(`  ↳ opened PR ${fin.url}`);
-    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId };
+    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId, reviewScore };
   } finally {
     await removeWorktree(repo, wt.path);
   }
@@ -249,6 +253,7 @@ async function runWithRevise(route, task, { signal } = {}) {
     if (agent.timedOut) return { result: agent.result, error: true, timedOut: true };
 
     let note = "";
+    let reviewScore;
     if (shouldReview(route, task, REVIEW_FORCED)) {
       const r = await reviewLoop({
         route,
@@ -259,8 +264,9 @@ async function runWithRevise(route, task, { signal } = {}) {
         log: (m) => console.log(`  ↳ ${m}`),
       });
       if (r.summary) note = `\n\n${r.summary}`;
+      if (r.review && Number.isFinite(r.review.confidence)) reviewScore = r.review.confidence;
     }
-    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true };
+    if (signal?.aborted) return { result: `${agent.result}${note}`, error: false, canceled: true, reviewScore };
 
     // Resume keeps the same id; a fresh fallback yields a new one — persist whichever
     // so the next revise resumes the latest session.
@@ -271,10 +277,10 @@ async function runWithRevise(route, task, { signal } = {}) {
       note: task.reviseNote,
       mergeConflict: wt.mergeConflict,
     });
-    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ Revise step failed: ${fin.error}`, error: true, sessionId };
-    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(revise made no changes — PR unchanged)`, error: agent.error, sessionId };
+    if (fin.error) return { result: `${agent.result}${note}\n\n⚠ Revise step failed: ${fin.error}`, error: true, sessionId, reviewScore };
+    if (fin.noChanges) return { result: `${agent.result}${note}\n\n(revise made no changes — PR unchanged)`, error: agent.error, sessionId, reviewScore };
     console.log(`  ↳ updated PR ${fin.url}`);
-    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId };
+    return { result: `${agent.result}${note}\n\nBOARD_PR: ${fin.url}`, error: agent.error, sessionId, reviewScore };
   } finally {
     await removeWorktree(repo, wt.path);
   }
@@ -295,7 +301,27 @@ function dryRunPreview(route, runTask, opensPr) {
   return preview;
 }
 
+// Best-effort append to the durable run-history log. Never let a history write
+// break the dispatch loop.
+function recordHistory(task, { status, error, prUrl, reviewScore, startedAt }) {
+  appendHistory(
+    historyRecord({
+      id: task.id,
+      title: task.title,
+      agent: task.agent || "default",
+      repo: repoFromTags(task.tags),
+      status,
+      durationMs: Date.now() - startedAt,
+      reviewScore,
+      prUrl,
+      error,
+      at: Date.now(),
+    }),
+  );
+}
+
 async function processTask(task) {
+  const startedAt = Date.now();
   const route = routeFor(task);
   const label = task.agent || "default";
   // Code routes (pr:true) that target a repo get the dispatcher-driven PR flow:
@@ -338,6 +364,7 @@ async function processTask(task) {
     const partial = notifyBody(outcome.result || "");
     const body = `🛑 Cancelled by you${partial ? `\n\n${partial}` : ""}`;
     await reportResult(task.id, { result: body, error: false, status: "done" });
+    recordHistory(task, { status: "done", error: false, reviewScore: outcome.reviewScore, startedAt });
     console.log(`🛑 cancelled "${task.title}" → Done`);
     await notify(`🛑 Cancelled "${task.title}" — moved to Done.`);
     return;
@@ -360,6 +387,13 @@ async function processTask(task) {
   const prUrl = extractPrUrl(outcome.result);
   const status = resultStatus({ execute: EXECUTE, error: outcome.error, prOpened: Boolean(prUrl) });
   await reportResult(task.id, { result: outcome.result, error: outcome.error, status, sessionId: outcome.sessionId });
+  recordHistory(task, {
+    status,
+    error: outcome.error,
+    prUrl: prUrl || "",
+    reviewScore: outcome.reviewScore,
+    startedAt,
+  });
 
   const head = outcome.error ? `❌ Failed "${task.title}"` : `✅ Done "${task.title}" by ${label}`;
   // Surface the PR link as its own line (Telegram auto-links it) so it's always

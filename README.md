@@ -5,7 +5,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38bdf8?logo=tailwindcss&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-216%20passing-34d399.svg)
+![Tests](https://img.shields.io/badge/tests-271%20passing-34d399.svg)
 
 **Mission control for the work you hand to AI coding agents.**
 
@@ -52,6 +52,8 @@ If you drive more than one AI agent at a time, the bottleneck stops being _writi
 - **Live timers** — Running cards tick up in real time; Done cards show how long the work took (tabular figures, no jitter).
 - **PR-aware cards** — when a task opens a pull request, the card surfaces a one-click **PR link** field; result text is expandable (show more/less) with clickable links.
 - **Independent review gate (opt-in)** — before a PR opens, a _fresh_ agent that didn't write the code reviews the diff alongside the repo's own checks (`lint`/`typecheck`/`test`) and iterates fixes until the change clears a confidence gate — so you only ever review PRs that already passed. See [Independent review gate](#independent-review-gate-opt-in).
+- **Send a PR back to fix (revise + resume)** — a Review card whose PR has failing CI or a merge conflict can be sent back for another pass that **updates the same PR** (never opens a new one): from the card's **"Send back for revision"** button or Telegram **`/revise <id> <fix>`**. The dispatcher reopens the existing branch, **resumes the original agent session** (so it keeps its implementation context), merges the latest base, and force-free pushes the fix. See [Revise a PR](#revise-a-pr-send-back).
+- **Terminal-state cleanup** — the merge-watcher advances a **merged** PR's card to Done and **deletes** a card whose PR you **closed without merging**, pruning the stale `atb/<id>` branch either way — so rejected work and dead branches don't pile up.
 - **Compact Done lane + archive** — Done cards collapse to a one-line summary; **archive** finished cards behind a per-lane reveal (with restore) so the board never bloats.
 - **Search** — filter across titles, prompts, agents, tags, and notes instantly.
 - **Local-first by default** — the board lives in `localStorage`. No account, no telemetry.
@@ -125,7 +127,7 @@ app/api/          Route Handlers: board, tasks, claim, tasks/[id]/result
 agent/
   launch.mjs        One command: board + dispatcher + watcher (`npm run agents`)
   dispatcher.mjs    Claim → route by agent → run → report (to board + Telegram)
-  merge-watcher.mjs Move Review → Done when a card's PR is merged (polls `gh`)
+  merge-watcher.mjs PR merged → Review→Done; closed → delete card; prunes the branch (polls `gh`)
   scout.mjs         Improvement scout: scan ~/code, rank ideas, queue the single best (`npm run scout`)
   mcp-server.mjs    MCP stdio server exposing board tools
   telegram-bot.mjs  Inbound: messages → queued tasks
@@ -138,7 +140,7 @@ agent/
 ## Testing
 
 ```bash
-npm run test       # 216 unit tests: reducer (incl. archive), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue helpers, review-gate helpers, scout scan/rank/propose + incremental-scan memory/backlog helpers, Telegram message parsing
+npm run test       # 271 unit tests: reducer (incl. archive + revise send-back), claim/result, storage, time, server store, agent routing/PR/repo-slug/auto-requeue/revise helpers, review-gate helpers, merge/close + branch-prune PR helpers, /revise + /cancel Telegram helpers, scout scan/rank/propose + incremental-scan memory/backlog helpers, run-history, Telegram message parsing
 npm run typecheck
 npm run lint
 npm run build
@@ -271,10 +273,20 @@ The agent's prompt (`implementPrompt`) also **confines it to the worktree**: wor
 
 > Telegram: `/my-app add a health-check endpoint` → worktree on `atb/<id>` → PR opened → card sits in **Review** with a one-click PR link.
 
-The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) then polls every PR found on a Review card via `gh`, and moves the card to **Done** the moment that PR is merged — and pings Telegram *"🎉 merged → Done"*. So **merging the PR to master is the approval**; you never touch the board. Detection is detached from how the card was created — any Review card whose result contains a `github.com/.../pull/N` url is watched.
+The **merge-watcher** (`agent/merge-watcher.mjs`, started by `npm run agents`) then polls every PR found on a Review card via `gh` and acts on the PR's fate: **merged** → move the card to **Done** (Telegram *"🎉 merged → Done"*); **closed without merging** (you rejected it) → **delete the card**. Either way it **prunes the now-stale `atb/<id>` branch** so dead branches don't accumulate. So **merging the PR to master is the approval** and closing it is the rejection; you never touch the board. Detection is detached from how the card was created — any Review card whose result contains a `github.com/.../pull/N` url is watched.
 
 - Set the poll interval in `.env` via **`WATCHER_INTERVAL`** (ms, default `30000`), or `npm run watcher -- --interval 60000`.
 - Point the task at the repo you want changed — the Telegram slash command `/<name>` (or a `#repo:<name>` tag) maps to `<AGENT_REPO_BASE>/<name>` — and make sure `gh` is authenticated there.
+- Branch pruning is guarded to `atb/*` heads (never a hand-made PR's branch); an already-deleted branch is a harmless no-op.
+
+### Revise a PR (send back)
+
+A PR sitting in Review isn't a dead end. When CI fails or main moves under it, **send it back for another pass that updates the *same* PR** — no new PR, no force-push:
+
+- **From the board** — a **"Send back for revision"** button on Review cards opens a dialog for your correction.
+- **From Telegram** — bare **`/revise`** lists the revise-able cards; **`/revise <id> <correction>`** sends one back. The id is right there: every "in Review" notification includes a ready-to-use `↩️ send back: /revise <id> <fix>` line, and the PR body carries a `Board task: <id>` footer.
+
+The dispatcher then reopens the existing `atb/<id>` branch in a worktree at the same path, **resumes the original agent session** (`claude --resume` — so it recalls *why* it wrote the code, not just what) with your correction, **merges the latest base** (resolving conflicts), and fast-forward-pushes — the open PR just gains a new commit. Session capture is automatic (`Task.sessionId`); if a PR predates it, revise falls back to a fresh agent working from the checked-out branch. Implementation: `runWithRevise` + `createReviseWorktree`/`finishRevise` (`agent/lib/git.mjs`), routed by `isRevise`/`resumeRoute`/`revisePrompt` (`agent/lib/routes.mjs`).
 
 ### Independent review gate (opt-in)
 
@@ -397,7 +409,7 @@ The scout runs no board of its own — on your ✅ the control-plane bot POSTs t
 ### MCP & Telegram
 
 - **MCP server** (`agent/mcp-server.mjs`) exposes `add_task`, `list_tasks`, `get_board`, `claim_next`, `report_result`, `move_task`. Point Claude Desktop / Claude Code at it (`npm run mcp`) and queue work by talking to an agent. Config example is in the file header.
-- **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. **Pick the repo a code task runs in with a slash command:** a leading `/<repo>` (e.g. `/my-app add a health endpoint`) targets one task, and `/use <repo>` sets a sticky default for the chat so plain messages inherit it (`/use` shows it, `/use off` clears it). The repo list is read straight from the folders under `AGENT_REPO_BASE` and registered as a `/`-autocomplete menu on startup — **create a new repo and it becomes a command automatically**, nothing to maintain (slugs match separator-insensitively, so `/democratizing_claude` resolves `democratizing-claude`). A `#repo:<name>` tag still works as a fallback; precedence is `/<repo>` > `#repo:` tag > sticky default. **`/cancel`** stops a running task and **`/scout`** kicks off the improvement scout on demand (see those sections above). Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
+- **Telegram bot** (`agent/telegram-bot.mjs`) turns messages into tasks: `"[Claude Code] fix the flaky test #bug"` → a queued task tagged `bug` for `Claude Code`. **Pick the repo a code task runs in with a slash command:** a leading `/<repo>` (e.g. `/my-app add a health endpoint`) targets one task, and `/use <repo>` sets a sticky default for the chat so plain messages inherit it (`/use` shows it, `/use off` clears it). The repo list is read straight from the folders under `AGENT_REPO_BASE` and registered as a `/`-autocomplete menu on startup — **create a new repo and it becomes a command automatically**, nothing to maintain (slugs match separator-insensitively, so `/democratizing_claude` resolves `democratizing-claude`). A `#repo:<name>` tag still works as a fallback; precedence is `/<repo>` > `#repo:` tag > sticky default. **`/cancel`** stops a running task, **`/revise <id> <fix>`** sends a Review PR back for another pass, and **`/scout`** kicks off the improvement scout on demand (see those sections above). Send `/id` to get your chat id for `TELEGRAM_CHAT_ID` (where the dispatcher posts notifications).
 
 ### Wiring it to an existing Telegram agent
 

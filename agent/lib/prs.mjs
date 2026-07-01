@@ -24,14 +24,24 @@ export function isClosed(info) {
   return Boolean(info && info.state === "CLOSED" && !info.mergedAt);
 }
 
+const PR_OWNER_RE = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/\d+/i;
+
+/** Parse `{ owner, repo }` from a GitHub PR url, or null. Pure. */
+export function repoFromPrUrl(url) {
+  const m = PR_OWNER_RE.exec(String(url || ""));
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+
 /**
- * Ask `gh` for a PR's merge state.
- * Resolves `{ state, mergedAt }` on success, or `{ error }` (gh missing, not
- * authed, bad URL) — never rejects, so the watcher loop can keep going.
+ * Ask `gh` for a PR's state, merge stamp, and head branch.
+ * Resolves `{ state, mergedAt, headBranch }` on success, or `{ error }` (gh
+ * missing, not authed, bad URL) — never rejects, so the watcher loop keeps going.
  */
 export function prState(url) {
   return new Promise((resolve) => {
-    const child = spawn("gh", ["pr", "view", url, "--json", "state,mergedAt"], { env: process.env });
+    const child = spawn("gh", ["pr", "view", url, "--json", "state,mergedAt,headRefName"], {
+      env: process.env,
+    });
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => (out += d));
@@ -41,10 +51,34 @@ export function prState(url) {
       if (code !== 0) return resolve({ error: err.trim() || `gh exited ${code}` });
       try {
         const j = JSON.parse(out);
-        resolve({ state: j.state || null, mergedAt: j.mergedAt || null });
+        resolve({ state: j.state || null, mergedAt: j.mergedAt || null, headBranch: j.headRefName || null });
       } catch {
         resolve({ error: "could not parse gh output" });
       }
+    });
+  });
+}
+
+/**
+ * Delete a remote branch via `gh api`. Resolves `{ ok }` (or `{ ok, missing }`
+ * when it was already gone — e.g. auto-deleted on merge) or `{ error }`; never
+ * rejects. Only ever call this for branches we own (guard on the `atb/` prefix).
+ */
+export function deleteRemoteBranch(owner, repo, branch) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      "gh",
+      ["api", "-X", "DELETE", `repos/${owner}/${repo}/git/refs/heads/${branch}`],
+      { env: process.env },
+    );
+    let err = "";
+    child.stderr.on("data", (d) => (err += d));
+    child.on("error", (e) => resolve({ error: e.code === "ENOENT" ? "gh not found on PATH" : e.message }));
+    child.on("close", (code) => {
+      if (code === 0) return resolve({ ok: true });
+      if (/not found|does not exist|reference does not exist|422/i.test(err))
+        return resolve({ ok: true, missing: true });
+      resolve({ error: err.trim() || `gh exited ${code}` });
     });
   });
 }

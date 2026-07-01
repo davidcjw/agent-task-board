@@ -221,7 +221,7 @@ async function runWithPr(route, runTask, task, { signal } = {}) {
     // Carry the implementer's session id (not the reviewer/fixer's) up to the
     // board on every Review-bound return, so a later revise run can resume it.
     const sessionId = agent.sessionId;
-    const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title });
+    const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title, id: task.id });
     if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true, sessionId, reviewScore };
     if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error, sessionId, reviewScore };
     console.log(`  ↳ opened PR ${fin.url}`);
@@ -399,11 +399,15 @@ async function processTask(task) {
   // Surface the PR link as its own line (Telegram auto-links it) so it's always
   // clickable — never lost to the snippet cap — and drop the raw BOARD_PR marker.
   const prLine = prUrl ? `\n🔗 Review PR: ${prUrl}` : "";
+  // A PR sitting in Review can be sent back for another pass — surface the ready-to-use
+  // command with the id already filled in, so you don't have to hunt for it.
+  const reviseHint =
+    status === "review" && prUrl ? `\n↩️ send back: /revise ${task.id.slice(0, 8)} <correction>` : "";
   // Drop the file-by-file "Changes" section but always keep the review verdict.
   const snippet = notifyBody(outcome.result);
   const landed = status === "done" ? "(moved to Done)" : "(in Review for your approval)";
   console.log(`${outcome.error ? "✗" : "✓"} ${task.title} → ${status}${prUrl ? ` ${prUrl}` : ""}`);
-  await notify(`${head}${prLine}\n\n${snippet}\n\n${landed}`);
+  await notify(`${head}${prLine}${reviseHint}\n\n${snippet}\n\n${landed}`);
 }
 
 async function claim() {

@@ -368,4 +368,9 @@ describe("prBody", () => {
     const body = prBody({ files: [{ path: "a.ts", added: 1, removed: 0 }] });
     expect(body).toContain("Automated change by the agent task board.");
   });
+
+  it("adds a board-task-id footer when an id is given, and omits it otherwise", () => {
+    expect(prBody({ title: "x", files: [], id: "abc-123" })).toContain("_Board task: `abc-123`_");
+    expect(prBody({ title: "x", files: [] })).not.toContain("Board task:");
+  });
 });

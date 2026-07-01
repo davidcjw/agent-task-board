@@ -222,7 +222,12 @@ TELEGRAM_BOT_TOKEN=… npm run telegram
 
 # 5. (optional) MCP server, so you can enqueue by chatting with an agent
 npm run mcp
+
+# 6. (optional) run-history stats — summarize every task the dispatcher finished
+npm run history                   # human summary; add --json for the raw object
 ```
+
+**Run history.** Each time the dispatcher finishes a task (success, failure, or cancel) it appends one JSON line to **`.data/history.jsonl`** — id, title, agent, repo, final status, elapsed ms, the review score (if the review gate ran), and the PR url (if opened). It's best-effort (a failed write never breaks the dispatch loop) and gitignored via the `.data/` rule. **`npm run history`** reads that log and prints totals, success rate, average duration, and counts by status / repo / agent; an empty or absent log prints a clean zero-state.
 
 Copy [`.env.example`](.env.example) to `.env` and fill in what you need.
 

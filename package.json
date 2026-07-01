@@ -15,6 +15,7 @@
     "scout:uninstall": "node agent/launchd/scout-install.mjs --uninstall",
     "dispatcher": "node --env-file-if-exists=.env agent/dispatcher.mjs",
     "watcher": "node --env-file-if-exists=.env agent/merge-watcher.mjs",
+    "history": "node agent/history.mjs",
     "telegram": "node --env-file-if-exists=.env agent/telegram-bot.mjs",
     "mcp": "node --env-file-if-exists=.env agent/mcp-server.mjs",
     "agents": "node --env-file-if-exists=.env agent/launch.mjs",

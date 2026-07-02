@@ -221,7 +221,7 @@ async function runWithPr(route, runTask, task, { signal } = {}) {
     // Carry the implementer's session id (not the reviewer/fixer's) up to the
     // board on every Review-bound return, so a later revise run can resume it.
     const sessionId = agent.sessionId;
-    const fin = await finishPr(wt.path, { branch, base: wt.base, title: task.title, id: task.id });
+    const fin = await finishPr(wt.path, { branch, base: wt.base, startRef: wt.startRef, title: task.title, id: task.id });
     if (fin.error) return { result: `${agent.result}${note}\n\n⚠ PR step failed: ${fin.error}`, error: true, sessionId, reviewScore };
     if (fin.noChanges) return { result: `${agent.result}${note}\n\n(no file changes — no PR opened)`, error: agent.error, sessionId, reviewScore };
     console.log(`  ↳ opened PR ${fin.url}`);

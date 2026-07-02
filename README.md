@@ -103,7 +103,7 @@ The board seeds itself with a sample set of tasks on first visit. Clear it (tras
 The board is split into pure, framework-free logic and a thin React layer, which keeps the core fully unit-testable.
 
 <p align="center">
-  <img src="docs/architecture.png" alt="Agent Task Board architecture — browser engines and the shared board.ts reducer, the Next.js API + file-backed store, and the opt-in agent layer (inbound, dispatcher, runners, merge-watcher)" width="820">
+  <img src="docs/architecture.png" alt="Agent Task Board control plane — producers (improvement scout + Telegram bot) feed the board's Queued → Running → Review → Done lanes; the dispatcher claims a task, runs it in an isolated git worktree through the review gate and PR flow, and the merge-watcher polls GitHub to move merged PRs to Done, with a revise send-back loop from Review back to Queued" width="820">
 </p>
 
 ```

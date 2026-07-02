@@ -122,7 +122,9 @@ async function waitForBoard(timeoutMs = 60000) {
   while (Date.now() - started < timeoutMs) {
     if (shuttingDown) return false;
     try {
-      const res = await fetch(READY_URL);
+      const res = await fetch(READY_URL, {
+        headers: process.env.AGENT_TOKEN ? { authorization: `Bearer ${process.env.AGENT_TOKEN}` } : {},
+      });
       if (res.ok) return true;
     } catch {
       /* not up yet */

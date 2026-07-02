@@ -9,6 +9,16 @@ import type { BoardState, TaskInput } from "./types";
 
 const POLL_MS = 2000;
 
+// When the server sets AGENT_TOKEN, every /api route requires a bearer token.
+// The browser can't read server env, so mirror it via NEXT_PUBLIC_AGENT_TOKEN
+// (inlined into the client bundle at build time — anyone who can load the UI
+// can read it, so this is a trusted-network convenience, not a secret).
+const TOKEN = process.env.NEXT_PUBLIC_AGENT_TOKEN || "";
+
+function authHeaders(): Record<string, string> {
+  return TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
+}
+
 let current: BoardState = EMPTY;
 let hydrated = false;
 const listeners = new Set<() => void>();
@@ -27,7 +37,7 @@ async function send(method: string, url: string, body?: unknown): Promise<unknow
   try {
     const res = await fetch(url, {
       method,
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers: body ? { "content-type": "application/json", ...authHeaders() } : authHeaders(),
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
     });
@@ -43,7 +53,7 @@ async function send(method: string, url: string, body?: unknown): Promise<unknow
 
 async function refresh() {
   try {
-    const res = await fetch("/api/board", { cache: "no-store" });
+    const res = await fetch("/api/board", { cache: "no-store", headers: authHeaders() });
     if (res.ok) setBoard((await res.json()) as BoardState);
   } catch {
     /* offline — keep last snapshot, next poll retries */

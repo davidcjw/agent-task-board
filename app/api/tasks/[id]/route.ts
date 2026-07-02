@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { store } from "@/lib/server/store";
+import { authorized } from "@/lib/server/auth";
 import { coerceTaskPatch } from "@/lib/server/parse";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +8,9 @@ export const runtime = "nodejs";
 
 // PATCH /api/tasks/:id — update editable fields and/or move lane.
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  if (!authorized(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await ctx.params;
   let body: Record<string, unknown>;
   try {
@@ -20,7 +24,10 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 // DELETE /api/tasks/:id
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  if (!authorized(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await ctx.params;
   const board = await store.remove(id);
   return NextResponse.json({ board });

@@ -156,6 +156,12 @@ The interface is built on a vendored copy of **dragonfly-ds** (in `components/ds
 
 100% client-side. Your tasks and prompts live only in your browser's `localStorage` and are never sent anywhere. Use **Export** to keep a backup.
 
+### Securing API mode
+
+In API mode the board is a small HTTP server, open by default (local/trusted-network posture). Setting **`AGENT_TOKEN`** switches on uniform bearer-token auth: **every** `/api` route — `GET/POST/DELETE /api/board`, `POST /api/tasks`, `PATCH/DELETE /api/tasks/:id`, `POST /api/claim`, `POST /api/tasks/:id/result`, `POST /api/tasks/:id/cancel` — returns `401` without a valid `Authorization: Bearer <token>` header. Tokens are compared in constant time (`timingSafeEqual`). The agent-side clients (dispatcher, merge-watcher, MCP server, Telegram bot, control-plane launcher) all read the same `AGENT_TOKEN` env var and send it automatically.
+
+The browser UI in API mode needs the token too: set **`NEXT_PUBLIC_AGENT_TOKEN`** to the same value (e.g. in `.env.local`). Note that a `NEXT_PUBLIC_*` var is inlined into the client JavaScript bundle at build time — anyone who can load the UI can read it. `AGENT_TOKEN` therefore protects the API from other processes and hosts on the network, not from someone you serve the UI to; for real multi-user exposure put the board behind a reverse proxy with proper auth. Leaving `AGENT_TOKEN` unset keeps the whole API open — the local-first default.
+
 ## Agent orchestration
 
 Beyond the manual board, Agent Task Board can run a full **delegate → dispatch → run → review** loop where real agents pull work off the queue. The pieces:
@@ -246,7 +252,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in what you need.
 | `POST /api/claim` | **Atomically** claim the oldest queued task → Running |
 | `POST /api/tasks/:id/result` | Post an agent's result → Review |
 
-`/api/claim` and `/api/tasks/:id/result` honour an optional `AGENT_TOKEN` (`Authorization: Bearer …`).
+When `AGENT_TOKEN` is set, **every** `/api` route requires `Authorization: Bearer <token>` and returns `401` otherwise; when unset the API is open. The browser UI in API mode sends `NEXT_PUBLIC_AGENT_TOKEN`. See [Securing API mode](#securing-api-mode).
 
 ### Routing
 

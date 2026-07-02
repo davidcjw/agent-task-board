@@ -163,6 +163,8 @@ In API mode the board is a small HTTP server, open by default (local/trusted-net
 
 The browser UI in API mode needs the token too: set **`NEXT_PUBLIC_AGENT_TOKEN`** to the same value (e.g. in `.env.local`). Note that a `NEXT_PUBLIC_*` var is inlined into the client JavaScript bundle at build time — anyone who can load the UI can read it. `AGENT_TOKEN` therefore protects the API from other processes and hosts on the network, not from someone you serve the UI to; for real multi-user exposure put the board behind a reverse proxy with proper auth. Leaving `AGENT_TOKEN` unset keeps the whole API open — the local-first default.
 
+**Bind to localhost.** `npm start` runs `next start`, which listens on `0.0.0.0` — reachable from anywhere on your network. Since the local-first default leaves the API open, prefer **`npm run start:local`** (`next start -H 127.0.0.1`) so the board is only reachable from your own machine. If you do need to expose it beyond localhost, set `AGENT_TOKEN` **and** put it behind a reverse proxy with proper auth — don't rely on the open default on a shared network.
+
 ## Agent orchestration
 
 Beyond the manual board, Agent Task Board can run a full **delegate → dispatch → run → review** loop where real agents pull work off the queue. The pieces:

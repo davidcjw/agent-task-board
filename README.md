@@ -92,6 +92,7 @@ The board seeds itself with a sample set of tasks on first visit. Clear it (tras
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
+| `npm run check:agent` | `node --check` every `agent/**/*.mjs` (syntax guard for the ESM orchestration scripts) |
 | `npm run test` | Run the Vitest suite |
 | `npm run test:coverage` | Run the Vitest suite with a coverage summary (v8) |
 | `npm run test:watch` | Vitest in watch mode |

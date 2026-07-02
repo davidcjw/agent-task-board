@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "check:agent": "node agent/check.mjs",
     "scout": "node --env-file-if-exists=.env agent/scout.mjs",
     "scout:install": "node --env-file-if-exists=.env agent/launchd/scout-install.mjs",
     "scout:uninstall": "node agent/launchd/scout-install.mjs --uninstall",

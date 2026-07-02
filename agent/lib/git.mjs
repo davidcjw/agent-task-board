@@ -104,8 +104,10 @@ async function hydrateWorktree(repo, wt) {
 
 /**
  * Create an isolated worktree for a task: a fresh checkout of `repo` on a new
- * branch atb/<id>, hydrated with node_modules + .env. Returns { path, base }
- * (base = the branch the PR targets) or { error }.
+ * branch atb/<id>, hydrated with node_modules + .env. Returns
+ * { path, base, startRef } (base = the branch the PR targets; startRef = the ref
+ * the worktree was actually branched from — origin/<base> when available) or
+ * { error }.
  */
 export async function createWorktree(repo, branch, id) {
   return withRepoLock(repo, async () => {
@@ -115,6 +117,20 @@ export async function createWorktree(repo, branch, id) {
     if (cur.code !== 0) return { error: `couldn't read current branch: ${cur.err}` };
     const base = cur.out;
 
+    // Branch off the LATEST base, not the (often stale) local one: fetch
+    // origin/<base> and start the worktree from it, so the PR diffs against current
+    // main and merges cleanly. Fall back to the local branch when there's no origin
+    // / the fetch fails (offline, or a repo with no remote). `startRef` is what
+    // finishPr must diff against — the local `base` ref can lag behind origin, which
+    // would over-count upstream commits (and even open an empty PR).
+    let startRef = base;
+    const fetched = await run("git", ["fetch", "origin", base], repo);
+    if (fetched.code === 0) {
+      const remoteRef = `origin/${base}`;
+      const hasRemote = await run("git", ["rev-parse", "--verify", "--quiet", remoteRef], repo);
+      if (hasRemote.code === 0) startRef = remoteRef;
+    }
+
     await fsp.mkdir(WORKTREE_BASE, { recursive: true });
     const wt = worktreePath(WORKTREE_BASE, repo, id);
 
@@ -122,16 +138,16 @@ export async function createWorktree(repo, branch, id) {
     await fsp.rm(wt, { recursive: true, force: true }).catch(() => {});
     await run("git", ["worktree", "prune"], repo);
 
-    let add = await run("git", ["worktree", "add", "-b", branch, wt, base], repo);
+    let add = await run("git", ["worktree", "add", "-b", branch, wt, startRef], repo);
     if (add.code !== 0) {
-      // Branch likely left over from a prior run — drop it and retry from base.
+      // Branch likely left over from a prior run — drop it and retry from startRef.
       await run("git", ["branch", "-D", branch], repo);
-      add = await run("git", ["worktree", "add", "-b", branch, wt, base], repo);
+      add = await run("git", ["worktree", "add", "-b", branch, wt, startRef], repo);
       if (add.code !== 0) return { error: `git worktree add failed: ${add.err || add.out}` };
     }
 
     await hydrateWorktree(repo, wt);
-    return { path: wt, base };
+    return { path: wt, base, startRef };
   });
 }
 
@@ -197,7 +213,7 @@ export async function createReviseWorktree(repo, branch, id) {
  * Commit whatever the agent changed, push the branch, and open (or find) the PR.
  * Runs inside the worktree. Returns { url } | { noChanges: true } | { error }.
  */
-export async function finishPr(wt, { branch, base, title, id }) {
+export async function finishPr(wt, { branch, base, startRef = base, title, id }) {
   const add = await run("git", ["add", "-A"], wt);
   if (add.code !== 0) return { error: `git add failed: ${add.err || add.out}` };
   // Unstage the worktree-hydration artifacts so they never land in the PR: the
@@ -211,7 +227,7 @@ export async function finishPr(wt, { branch, base, title, id }) {
     if (commit.code !== 0) return { error: `git commit failed: ${commit.err || commit.out}` };
   }
 
-  const ahead = await run("git", ["rev-list", "--count", `${base}..${branch}`], wt);
+  const ahead = await run("git", ["rev-list", "--count", `${startRef}..${branch}`], wt);
   if ((Number(ahead.out) || 0) === 0) return { noChanges: true };
 
   const push = await run("git", ["push", "-u", "origin", branch], wt);
@@ -219,7 +235,7 @@ export async function finishPr(wt, { branch, base, title, id }) {
 
   // Build the PR description from the branch's diffstat so reviewers get a summary
   // of what changed (falls back to a bare body if the numstat read fails).
-  const numstat = await run("git", ["diff", "--numstat", `${base}..${branch}`], wt);
+  const numstat = await run("git", ["diff", "--numstat", `${startRef}..${branch}`], wt);
   const body = prBody({ title, files: numstat.code === 0 ? parseNumstat(numstat.out) : [], id });
   const create = await run(
     "gh",
